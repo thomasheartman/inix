@@ -21,6 +21,8 @@ Because it's a pain to always either copy or create these files from scratch. [[
 - [ ] Copy files directly from templates directory
 - [ ] Offer Rust and Node.js support
 - [ ] Play nice with Lorri
+- [ ] Include option to add own templates
+- [ ] Config file support
 
 
 *** v2
