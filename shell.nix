@@ -20,6 +20,8 @@ pkgs.mkShell {
     cargo-watch
     rust
 
+    taplo-cli # add taplo for LSP support for toml files
+
     # keep this line if you use bash
     pkgs.bashInteractive
   ];
