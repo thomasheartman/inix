@@ -2,6 +2,13 @@
 name = "inix"
 version = "0.1.0"
 edition = "2021"
+authors = ["Thomas Heartman"]
+description = "A CLI tool to initialize Nix + direnv projects."
+readme = "readme.org"
+repository = "https://github.com/thomasheartman/inix"
+license = "MPL-2.0"
+keywords = ["nix", "development"]
+categories = ["command-line-utilities", "development-tools"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
