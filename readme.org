@@ -1,0 +1,26 @@
+#+title: Inix
+
+#+caption: Inix logo: INIX in all caps on a black background. The N is boxed in by a rectangle and both the N and the rectangle fade from blue to pink.
+#+name: inix-logo
+[[file:inix.svg]]
+
+Inix (portmanteau of "init" and "nix") is a simple command line utility to help you get started with Nix projects. It adds ~.envrc~ and ~shell.nix~ files to a chosen directory based on the kind of project you want to create.
+
+Inix has a few built-in project types, but you can add your own templates too.
+
+* Why does this exist?
+
+Because it's a pain to always either copy or create these files from scratch. [[https://github.com/nix-community/lorri/][Lorri]] exists and is a great project, but ~lorri init~ only gives a default template (plus it doesn't work on systems that don't have Lorri, and I have a couple of those). Inix is intended to make initialization simpler.
+
+* Goals
+
+** v1
+
+- [ ] Copy files directly from templates directory
+- [ ] Offer Rust and Node.js support
+- [ ] Play nice with Lorri
+
+
+** v2
+
+- [ ] Allow arbitrary combinations of templates, e.g. Rust + Node, etc.
