@@ -7,7 +7,11 @@
 with pkgs;
 let
 
-  rust = pkgs.latest.rustChannels.stable.rust;
+  rust = pkgs.latest.rustChannels.stable.rust.override {
+    extensions = [
+      "rust-src"
+    ];
+  };
 
   in
 
