@@ -37,3 +37,15 @@ fn main() {
 // fn try_get_template(templatePath: PathBuf): Result<T, E> {
 
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Verify that the CLI is configured correctly.
+    fn verify_cli() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert()
+    }
+}
