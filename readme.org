@@ -22,8 +22,9 @@ Because it's a pain to always either copy or create these files from scratch. [[
 - [ ] Offer Rust and Node.js support
 - [ ] Play nice with Lorri
 - [ ] Include option to add own templates
+- [ ] Allow arbitrary combinations of templates, e.g. Rust + Node, etc.
 
 *** v2
 
-- [ ] Allow arbitrary combinations of templates, e.g. Rust + Node, etc.
 - [ ] Config file support
+- [ ] Collect all errors before exiting: don't stop at the first error you encounter. Instead check everything that you can, and report all the errors you find.
