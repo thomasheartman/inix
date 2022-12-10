@@ -15,3 +15,4 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 anyhow = "1.0.66"
 clap = { version = "4.0.29", features = ["derive"] }
+rustyline = "10.0.0"
