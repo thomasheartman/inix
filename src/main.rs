@@ -1,10 +1,10 @@
 use std::{
     env::current_dir,
-    fmt::Display,
+    fs, io,
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, bail, Context};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -40,16 +40,10 @@ fn try_get_target_dir(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
         None => current_dir().context("Failed to read the current working directory."),
 
         Some(dir) => {
-            let data = std::fs::metadata(AsRef::<Path>::as_ref(&dir)).with_context(|| {
-                format!(
-                    "Failed to read metadata about \"{}\". It probably does not exist.",
-                    dir.display()
-                )
-            })?;
-            if std::fs::Metadata::is_dir(&data) {
+            if dir.is_dir() {
                 Ok(dir)
             } else {
-                Err(std::io::Error::from(std::io::ErrorKind::Other)).with_context(|| {
+                Err(io::Error::from(io::ErrorKind::Other)).with_context(|| {
                     format!(
                         "\"{}\" is not a directory, so I cannot place any files there.",
                         dir.display()
@@ -60,22 +54,36 @@ fn try_get_target_dir(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn execute(cli: Cli) -> anyhow::Result<()> {
-    Ok(())
-}
-
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // PREPARE //
 
     // check to see if the target directory exists
-    try_get_target_dir(cli.directory)?;
+    let target_dir = try_get_target_dir(cli.directory)?;
 
     // check to see whether we have write permissions in the target
     // directory
 
+    let metadata = target_dir.metadata().with_context(|| {
+        format!(
+            "Unable to read permission status for \"{}\".",
+            &target_dir.display()
+        )
+    })?;
+
+    let false = metadata.permissions().readonly() else {
+        bail!(
+            "I don't have the right permissions to write to \"{}\"",
+            &target_dir.display()
+        )
+    };
+
     // does the inix subdirectory already exist?
+    let inix_dir = target_dir.join("inix");
+
+    if inix_dir.is_dir() {}
+
     // If so, what about subdirectories? What do you want to do in case of conflicts?
 
     // get templates
@@ -85,8 +93,7 @@ fn main() -> anyhow::Result<()> {
     // copy templates over (into an inix directory)
 
     //
-
-    execute(cli)
+    Ok(())
 }
 
 #[cfg(test)]
