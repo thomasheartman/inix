@@ -158,7 +158,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let templates = cli.templates.iter().map(|template_name| {
-        match template_locations.iter().find_map(|location| {
+        let custom_template = template_locations.iter().find_map(|location| {
             let dir = location.join(template_name);
             match (
                 fs::read_to_string(dir.join("shell.nix")),
@@ -181,7 +181,9 @@ fn main() -> anyhow::Result<()> {
                     files: CustomFiles::Both { nix, envrc },
                 }),
             }
-        }) {
+        });
+
+        match custom_template {
             Some(template) => Ok(Templates::Custom(template)),
             None => included_templates
                 .get(&template_name as &str)
@@ -192,7 +194,7 @@ fn main() -> anyhow::Result<()> {
                         template_name
                     ))
                 }),
-        }
+        };
     });
 
     // check to see if the target directory exists
