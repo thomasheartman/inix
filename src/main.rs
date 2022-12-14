@@ -1,11 +1,8 @@
-use std::{
-    env::current_dir,
-    fs, io,
-    path::{Path, PathBuf},
-};
+use common_macros::hash_map;
+use std::{env::current_dir, fs, io, path::PathBuf};
 
-use anyhow::{anyhow, bail, Context};
-use clap::{ArgGroup, Parser, ValueEnum};
+use anyhow::{bail, Context};
+use clap::{Parser, ValueEnum};
 use rustyline::{error::ReadlineError, Editor};
 
 #[derive(ValueEnum, Clone)]
@@ -86,6 +83,118 @@ fn main() -> anyhow::Result<()> {
 
     // PREPARE //
 
+    // check to see whether we can find all the templates
+
+    const RESERVED_NAMES: [&str; 2] = ["blank", "_"];
+
+    #[derive(Clone, Copy)]
+    enum TemplateFiles {
+        Nix(&'static str),
+        // Envrc(&'static str),
+        Both {
+            nix: &'static str,
+            envrc: &'static str,
+        },
+    }
+
+    #[derive(Clone)]
+    struct BuiltinTemplate {
+        name: &'static str,
+        files: TemplateFiles,
+        source_dir: PathBuf,
+    }
+
+    // a prioritized list over where to find templates. Items listed earlier take precedence
+    let template_locations = [
+        dirs::config_dir().map(|dir| dir.join("inix")),
+        // Some(PathBuf::from("../templates")),
+    ]
+    .into_iter()
+    .filter_map(|x| x.and_then(|path| if path.is_dir() { Some(path) } else { None }))
+    .collect::<Vec<_>>();
+
+    let included_templates = hash_map! {
+        "rust" => BuiltinTemplate {
+            name: "rust",
+            files: TemplateFiles::Nix(include_str!("templates/rust/shell.nix")),
+            source_dir: PathBuf::from("inix/templates")
+        },
+        "node" => BuiltinTemplate {
+            name: "node",
+            files: TemplateFiles::Both {
+                nix: include_str!("templates/node/shell.nix"),
+                envrc: include_str!("templates/node/.envrc"),
+            },
+            source_dir: PathBuf::from("inix/templates")
+        },
+        "base" => BuiltinTemplate {
+            name: "base",
+            files: TemplateFiles::Both {
+                nix: include_str!("templates/base/shell.nix"),
+                envrc: include_str!("templates/base/.envrc"),
+            },
+            source_dir: PathBuf::from("inix/templates")
+        },
+    };
+
+    #[derive(Clone)]
+    enum CustomFiles {
+        Nix(String),
+        Envrc(String),
+        Both { nix: String, envrc: String },
+    }
+
+    #[derive(Clone)]
+    struct CustomTemplate<'a> {
+        name: &'a str,
+        files: CustomFiles,
+        source_dir: PathBuf,
+    }
+
+    #[derive(Clone)]
+    enum Templates<'a> {
+        Custom(CustomTemplate<'a>),
+        Builtin(BuiltinTemplate),
+    }
+
+    let templates = cli.templates.iter().map(|template_name| {
+        match template_locations.iter().find_map(|location| {
+            let dir = location.join(template_name);
+            match (
+                fs::read_to_string(dir.join("shell.nix")),
+                fs::read_to_string(dir.join(".envrc")),
+            ) {
+                (Err(_), Err(_)) => None,
+                (Ok(nix), Err(_)) => Some(CustomTemplate {
+                    name: template_name,
+                    source_dir: dir,
+                    files: CustomFiles::Nix(nix),
+                }),
+                (Err(_), Ok(envrc)) => Some(CustomTemplate {
+                    name: template_name,
+                    source_dir: dir,
+                    files: CustomFiles::Envrc(envrc),
+                }),
+                (Ok(nix), Ok(envrc)) => Some(CustomTemplate {
+                    name: template_name,
+                    source_dir: dir,
+                    files: CustomFiles::Both { nix, envrc },
+                }),
+            }
+        }) {
+            Some(template) => Ok(Templates::Custom(template)),
+            None => included_templates
+                .get(&template_name as &str)
+                .map(|t| Templates::Builtin(t.clone()))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(format!(
+                        r#"I couldn't find any template files for "{}"."#,
+                        template_name
+                    ))
+                }),
+        }
+    });
+
     // check to see if the target directory exists
     let target_dir = try_get_target_dir(cli.directory)?;
 
@@ -135,94 +244,94 @@ fn main() -> anyhow::Result<()> {
         description: String,
     }
 
-    let file_write_op: anyhow::Result<Operation> = match (&inix_dir_state, cli.on_conflict) {
-        (InixDirState::DoesNotExist, _) => Ok(Operation {
-            description: format!(
-                r#"I will create the `inix` directory "{}" and a subdirectory for each of the provided templates: "{}""#,
-                inix_dir.display(),
-                cli.templates.join(", ")
-            ),
-            perform_operation: &|| {
-                let _ = fs::create_dir_all(inix_dir).with_context(|| {
-                    format!(
-                        r#"I was unable to create the base inix directory at {}"#,
-                        inix_dir.display(),
-                    )
-                })?;
-                let template_results = cli.templates.iter().map(|template| {
-                    let path = inix_dir.join(template);
-                    let template_source_dir = "template-path";
-                    fs::copy(template_source_dir, path).with_context(|| {
-                        format!(
-                            r#"Failed to copy template "{}" from "{}" to "{}"."#,
-                            template,
-                            template_source_dir,
-                            path.display(),
-                        )
-                    })?;
-                    Ok::<(), anyhow::Error>(())
-                });
-                Ok(())
-            },
-        }),
-        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Abort)) => bail!(
-            r#""{}" already exists. Because you have asked me to abort on conflicts, I cannot proceed any further."#,
-            inix_dir.display()
-        ),
-        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Overwrite)) => todo!(),
-        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeKeep)) => todo!(),
-        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeReplace)) => todo!(),
-        (InixDirState::AlreadyExists { .. }, None) => todo!("Put user interaction stuff here."),
-    };
-    match inix_dir_state {
-        InixDirState::DoesNotExist => {}
-        InixDirState::AlreadyExists {
-            template_collisions,
-        } => {
-            let mut rl = Editor::<()>::new()?;
+    // let file_write_op: anyhow::Result<Operation> = match (&inix_dir_state, cli.on_conflict) {
+    //     (InixDirState::DoesNotExist, _) => Ok(Operation {
+    //         description: format!(
+    //             r#"I will create the `inix` directory "{}" and a subdirectory for each of the provided templates: "{}""#,
+    //             inix_dir.display(),
+    //             cli.templates.join(", ")
+    //         ),
+    //         perform_operation: &|| {
+    //             let _ = fs::create_dir_all(inix_dir).with_context(|| {
+    //                 format!(
+    //                     r#"I was unable to create the base inix directory at {}"#,
+    //                     inix_dir.display(),
+    //                 )
+    //             })?;
+    //             let template_results = cli.templates.iter().map(|template| {
+    //                 let path = inix_dir.join(template);
+    //                 let template_source_dir = "template-path";
+    //                 fs::copy(template_source_dir, path).with_context(|| {
+    //                     format!(
+    //                         r#"Failed to copy template "{}" from "{}" to "{}"."#,
+    //                         template,
+    //                         template_source_dir,
+    //                         path.display(),
+    //                     )
+    //                 })?;
+    //                 Ok::<(), anyhow::Error>(())
+    //             });
+    //             Ok(())
+    //         },
+    //     }),
+    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Abort)) => bail!(
+    //         r#""{}" already exists. Because you have asked me to abort on conflicts, I cannot proceed any further."#,
+    //         inix_dir.display()
+    //     ),
+    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Overwrite)) => todo!(),
+    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeKeep)) => todo!(),
+    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeReplace)) => todo!(),
+    //     (InixDirState::AlreadyExists { .. }, None) => todo!("Put user interaction stuff here."),
+    // };
+    // match inix_dir_state {
+    //     InixDirState::DoesNotExist => {}
+    //     InixDirState::AlreadyExists {
+    //         template_collisions,
+    //     } => {
+    //         let mut rl = Editor::<()>::new()?;
 
-            // Case enumeration
+    //         // Case enumeration
 
-            // The inix directory already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
-            // A: Merge the two inix directories, adding your new templates to the existing directory? (merge_x)
-            // B: Overwrite the whole directory, removing everything that's in it and replacing it with the new templates? (overwrite)
+    //         // The inix directory already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
+    //         // A: Merge the two inix directories, adding your new templates to the existing directory? (merge_x)
+    //         // B: Overwrite the whole directory, removing everything that's in it and replacing it with the new templates? (overwrite)
 
-            // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
-            // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
-            // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
-            // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
+    //         // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
+    //         // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
+    //         // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
+    //         // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
 
-            // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
-            // A:overwrite the entire inix directory (overwrite)
-            // B: only overwrite the subdirectories (merge_replace)
-            // C: or cancel the operation? (merge_keep)
+    //         // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
+    //         // A:overwrite the entire inix directory (overwrite)
+    //         // B: only overwrite the subdirectories (merge_replace)
+    //         // C: or cancel the operation? (merge_keep)
 
-            loop {
-                println!(
-                    r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
-                    &inix_dir.display()
-                );
-                let readline = rl.readline(">> ");
-                match readline {
-                    Ok(line) => {
-                        println!("Line: {}", line)
-                    }
-                    Err(ReadlineError::Interrupted) => {
-                        println!("CTRL-C");
-                        break;
-                    }
-                    Err(ReadlineError::Eof) => {
-                        println!("CTRL-D");
-                        break;
-                    }
-                    Err(err) => {
-                        println!("Error: {:?}", err);
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    //         loop {
+    //             println!(
+    //                 r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
+    //                 &inix_dir.display()
+    //             );
+    //             let readline = rl.readline(">> ");
+    //             match readline {
+    //                 Ok(line) => {
+    //                     println!("Line: {}", line)
+    //                 }
+    //                 Err(ReadlineError::Interrupted) => {
+    //                     println!("CTRL-C");
+    //                     break;
+    //                 }
+    //                 Err(ReadlineError::Eof) => {
+    //                     println!("CTRL-D");
+    //                     break;
+    //                 }
+    //                 Err(err) => {
+    //                     println!("Error: {:?}", err);
+    //                     break;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     // If so, what about subdirectories? What do you want to do in case of conflicts?
 
