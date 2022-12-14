@@ -5,19 +5,18 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context};
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, ValueEnum};
 use rustyline::{error::ReadlineError, Editor};
 
-#[derive(Parser)]
-#[command(group(ArgGroup::new("Merge options")
-                .required(false)
-//                 .description(r#"
-//     How inix should handle cases where an inix directory already
-//     exists.
+#[derive(ValueEnum, Clone)]
+enum ConflictBehavior {
+    Overwrite,
+    MergeKeep,
+    MergeReplace,
+    Abort,
+}
 
-//     If not provided, inix will prompt you in case of a conflict.
-// "#)
-.args(["merge_keep", "merge_replace", "overwrite"])))]
+#[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
     /// The name of the template to use.
@@ -44,29 +43,23 @@ struct Cli {
     #[arg(short, long, action = clap::ArgAction::SetTrue)]
     auto_allow: bool,
 
-    // Merge options
-    /// In case of conflict, replace an existing inix directory
-    /// completely.
-    #[arg(long)]
-    overwrite: bool,
-
-    /// In case of conflict, try to merge the old and new directories,
-    /// with existing files taking precedence.
+    /// What to do in case of a pre-existing inix directory where you
+    /// are trying to create one. If no value is provided, inix will
+    /// prompt you if there is a conflict.
     ///
-    /// For instance, if the existing inix directory already has a
-    /// "rust" template and you've told inix to add the same template,
-    /// then inix will keep the existing template.
-    #[arg(long = "merge-keep")]
-    merge_keep: bool,
-
-    /// In case of conflict, try to merge the old and new directories,
-    /// with new files taking precedence.
+    /// overwrite: Remove the existing inix directory and create a new one.
     ///
-    /// For instance, if the existing inix directory already has a
-    /// "rust" template and you've told inix to add the same template,
-    /// then inix will remove the existing template before adding it.
-    #[arg(long)]
-    merge_replace: bool,
+    /// merge-keep: Merge the old and the new directories. If you're
+    /// trying to add templates that already exist in the directory,
+    /// keep the existing templates instead.
+    ///
+    /// merge-replace: Merge the old and the new directories. If you're
+    /// trying to add templates that already exist in the directory,
+    /// remove the old templates and add the new ones.
+    ///
+    /// abort: Stop the process without writing any files.
+    #[arg(long, value_enum)]
+    on_conflict: Option<ConflictBehavior>,
 }
 
 fn try_get_target_dir(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
@@ -137,52 +130,94 @@ fn main() -> anyhow::Result<()> {
         InixDirState::DoesNotExist
     };
 
-    if !(cli.overwrite || cli.merge_keep || cli.merge_replace) {
-        match inix_dir_state {
-            InixDirState::DoesNotExist => {}
-            InixDirState::AlreadyExists {
-                template_collisions,
-            } => {
-                let mut rl = Editor::<()>::new()?;
+    struct Operation<'a> {
+        perform_operation: &'a dyn FnOnce() -> anyhow::Result<()>,
+        description: String,
+    }
 
-                // Case enumeration
+    let file_write_op: anyhow::Result<Operation> = match (&inix_dir_state, cli.on_conflict) {
+        (InixDirState::DoesNotExist, _) => Ok(Operation {
+            description: format!(
+                r#"I will create the `inix` directory "{}" and a subdirectory for each of the provided templates: "{}""#,
+                inix_dir.display(),
+                cli.templates.join(", ")
+            ),
+            perform_operation: &|| {
+                let _ = fs::create_dir_all(inix_dir).with_context(|| {
+                    format!(
+                        r#"I was unable to create the base inix directory at {}"#,
+                        inix_dir.display(),
+                    )
+                })?;
+                let template_results = cli.templates.iter().map(|template| {
+                    let path = inix_dir.join(template);
+                    let template_source_dir = "template-path";
+                    fs::copy(template_source_dir, path).with_context(|| {
+                        format!(
+                            r#"Failed to copy template "{}" from "{}" to "{}"."#,
+                            template,
+                            template_source_dir,
+                            path.display(),
+                        )
+                    })?;
+                    Ok::<(), anyhow::Error>(())
+                });
+                Ok(())
+            },
+        }),
+        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Abort)) => bail!(
+            r#""{}" already exists. Because you have asked me to abort on conflicts, I cannot proceed any further."#,
+            inix_dir.display()
+        ),
+        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Overwrite)) => todo!(),
+        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeKeep)) => todo!(),
+        (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeReplace)) => todo!(),
+        (InixDirState::AlreadyExists { .. }, None) => todo!("Put user interaction stuff here."),
+    };
+    match inix_dir_state {
+        InixDirState::DoesNotExist => {}
+        InixDirState::AlreadyExists {
+            template_collisions,
+        } => {
+            let mut rl = Editor::<()>::new()?;
 
-                // The inix directory already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
-                // A: Merge the two inix directories, adding your new templates to the existing directory? (merge_x)
-                // B: Overwrite the whole directory, removing everything that's in it and replacing it with the new templates? (overwrite)
+            // Case enumeration
 
-                // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
-                // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
-                // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
-                // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
+            // The inix directory already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
+            // A: Merge the two inix directories, adding your new templates to the existing directory? (merge_x)
+            // B: Overwrite the whole directory, removing everything that's in it and replacing it with the new templates? (overwrite)
 
-                // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
-                // A:overwrite the entire inix directory (overwrite)
-                // B: only overwrite the subdirectories (merge_replace)
-                // C: or cancel the operation? (merge_keep)
+            // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
+            // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
+            // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
+            // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
 
-                loop {
-                    println!(
-                        r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
-                        &inix_dir.display()
-                    );
-                    let readline = rl.readline(">> ");
-                    match readline {
-                        Ok(line) => {
-                            println!("Line: {}", line)
-                        }
-                        Err(ReadlineError::Interrupted) => {
-                            println!("CTRL-C");
-                            break;
-                        }
-                        Err(ReadlineError::Eof) => {
-                            println!("CTRL-D");
-                            break;
-                        }
-                        Err(err) => {
-                            println!("Error: {:?}", err);
-                            break;
-                        }
+            // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
+            // A:overwrite the entire inix directory (overwrite)
+            // B: only overwrite the subdirectories (merge_replace)
+            // C: or cancel the operation? (merge_keep)
+
+            loop {
+                println!(
+                    r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
+                    &inix_dir.display()
+                );
+                let readline = rl.readline(">> ");
+                match readline {
+                    Ok(line) => {
+                        println!("Line: {}", line)
+                    }
+                    Err(ReadlineError::Interrupted) => {
+                        println!("CTRL-C");
+                        break;
+                    }
+                    Err(ReadlineError::Eof) => {
+                        println!("CTRL-D");
+                        break;
+                    }
+                    Err(err) => {
+                        println!("Error: {:?}", err);
+                        break;
                     }
                 }
             }
