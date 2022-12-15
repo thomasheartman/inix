@@ -3,6 +3,7 @@ use std::{env::current_dir, fs, io, path::PathBuf};
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, ValueEnum};
+use indoc::formatdoc;
 use itertools::Itertools;
 use rustyline::{error::ReadlineError, Editor};
 
@@ -186,7 +187,19 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
     if errs.is_empty() {
         Ok(oks)
     } else {
-        Err(anyhow!("whoops"))
+        Err(anyhow!(formatdoc!(
+            "
+            I couldn't find these templates:
+            {}
+
+            I looked in these directories:
+            {}",
+            errs.iter().map(|name| format!("- {}", name)).join("\n"),
+            template_locations
+                .iter()
+                .map(|location| format!("- {}", location.display()))
+                .join("\n"),
+        )))
     }
 }
 
