@@ -1,8 +1,9 @@
 use common_macros::hash_map;
 use std::{env::current_dir, fs, io, path::PathBuf};
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use clap::{Parser, ValueEnum};
+use itertools::Itertools;
 use rustyline::{error::ReadlineError, Editor};
 
 #[derive(ValueEnum, Clone)]
@@ -78,32 +79,44 @@ fn try_get_target_dir(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+#[derive(Clone, Copy)]
+enum TemplateFiles {
+    Nix(&'static str),
+    // Envrc(&'static str),
+    Both {
+        nix: &'static str,
+        envrc: &'static str,
+    },
+}
 
-    // PREPARE //
+#[derive(Clone)]
+struct BuiltinTemplate {
+    name: &'static str,
+    files: TemplateFiles,
+    source_dir: PathBuf,
+}
 
-    // check to see whether we can find all the templates
+#[derive(Clone)]
+enum CustomFiles {
+    Nix(String),
+    Envrc(String),
+    Both { nix: String, envrc: String },
+}
 
-    const RESERVED_NAMES: [&str; 2] = ["blank", "_"];
+#[derive(Clone)]
+struct CustomTemplate<'a> {
+    name: &'a str,
+    files: CustomFiles,
+    source_dir: PathBuf,
+}
 
-    #[derive(Clone, Copy)]
-    enum TemplateFiles {
-        Nix(&'static str),
-        // Envrc(&'static str),
-        Both {
-            nix: &'static str,
-            envrc: &'static str,
-        },
-    }
+#[derive(Clone)]
+enum Template<'a> {
+    Custom(CustomTemplate<'a>),
+    Builtin(BuiltinTemplate),
+}
 
-    #[derive(Clone)]
-    struct BuiltinTemplate {
-        name: &'static str,
-        files: TemplateFiles,
-        source_dir: PathBuf,
-    }
-
+fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>> {
     // a prioritized list over where to find templates. Items listed earlier take precedence
     let template_locations = [
         dirs::config_dir().map(|dir| dir.join("inix")),
@@ -137,65 +150,62 @@ fn main() -> anyhow::Result<()> {
         },
     };
 
-    #[derive(Clone)]
-    enum CustomFiles {
-        Nix(String),
-        Envrc(String),
-        Both { nix: String, envrc: String },
+    let (oks, errs): (Vec<_>, Vec<_>) = input_templates
+        .iter()
+        .map(|template_name| {
+            template_locations
+                .iter()
+                .find_map(|location| {
+                    let dir = location.join(template_name);
+                    match (
+                        fs::read_to_string(dir.join("shell.nix")),
+                        fs::read_to_string(dir.join(".envrc")),
+                    ) {
+                        (Err(_), Err(_)) => None,
+                        (Ok(nix), Err(_)) => Some(CustomTemplate {
+                            name: template_name,
+                            source_dir: dir,
+                            files: CustomFiles::Nix(nix),
+                        }),
+                        (Err(_), Ok(envrc)) => Some(CustomTemplate {
+                            name: template_name,
+                            source_dir: dir,
+                            files: CustomFiles::Envrc(envrc),
+                        }),
+                        (Ok(nix), Ok(envrc)) => Some(CustomTemplate {
+                            name: template_name,
+                            source_dir: dir,
+                            files: CustomFiles::Both { nix, envrc },
+                        }),
+                    }
+                })
+                .map(Template::Custom)
+                .or_else(|| {
+                    included_templates
+                        .get(&template_name as &str)
+                        .map(|t| Template::Builtin(t.clone()))
+                })
+                .ok_or_else(|| anyhow!(template_name.clone()))
+        })
+        .partition_result();
+
+    if errs.is_empty() {
+        Ok(oks)
+    } else {
+        Err(anyhow!("whoops"))
     }
+}
 
-    #[derive(Clone)]
-    struct CustomTemplate<'a> {
-        name: &'a str,
-        files: CustomFiles,
-        source_dir: PathBuf,
-    }
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
 
-    #[derive(Clone)]
-    enum Templates<'a> {
-        Custom(CustomTemplate<'a>),
-        Builtin(BuiltinTemplate),
-    }
+    // PREPARE //
 
-    let templates = cli.templates.iter().map(|template_name| {
-        let custom_template = template_locations.iter().find_map(|location| {
-            let dir = location.join(template_name);
-            match (
-                fs::read_to_string(dir.join("shell.nix")),
-                fs::read_to_string(dir.join(".envrc")),
-            ) {
-                (Err(_), Err(_)) => None,
-                (Ok(nix), Err(_)) => Some(CustomTemplate {
-                    name: template_name,
-                    source_dir: dir,
-                    files: CustomFiles::Nix(nix),
-                }),
-                (Err(_), Ok(envrc)) => Some(CustomTemplate {
-                    name: template_name,
-                    source_dir: dir,
-                    files: CustomFiles::Envrc(envrc),
-                }),
-                (Ok(nix), Ok(envrc)) => Some(CustomTemplate {
-                    name: template_name,
-                    source_dir: dir,
-                    files: CustomFiles::Both { nix, envrc },
-                }),
-            }
-        });
+    // check to see whether we can find all the templates
 
-        match custom_template {
-            Some(template) => Ok(Templates::Custom(template)),
-            None => included_templates
-                .get(&template_name as &str)
-                .map(|t| Templates::Builtin(t.clone()))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(format!(
-                        r#"I couldn't find any template files for "{}"."#,
-                        template_name
-                    ))
-                }),
-        };
-    });
+    const RESERVED_NAMES: [&str; 2] = ["blank", "_"];
+
+    let templates = try_get_templates(&cli.templates)?;
 
     // check to see if the target directory exists
     let target_dir = try_get_target_dir(cli.directory)?;
