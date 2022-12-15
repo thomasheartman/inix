@@ -166,12 +166,13 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
                         (Err(_), Ok(envrc)) => Some(CustomFiles::Envrc(envrc)),
                         (Ok(nix), Ok(envrc)) => Some(CustomFiles::Both { nix, envrc }),
                     }
-                    .map(|files| CustomTemplate {
-                        name: template_name,
-                        source_dir: dir,
-                        files,
+                    .map(|files| {
+                        Template::Custom(CustomTemplate {
+                            name: template_name,
+                            source_dir: dir,
+                            files,
+                        })
                     })
-                    .map(Template::Custom)
                 })
                 .or_else(|| {
                     included_templates
