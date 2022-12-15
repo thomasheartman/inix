@@ -21,7 +21,6 @@ struct Cli {
     /// The name of the template to use.
     ///
     /// Inix uses a blank template if you don't specify one.
-    #[arg(short, long)]
     templates: Vec<String>,
 
     /// The directory to initialize.
