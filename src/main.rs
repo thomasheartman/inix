@@ -162,24 +162,17 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
                         fs::read_to_string(dir.join(".envrc")),
                     ) {
                         (Err(_), Err(_)) => None,
-                        (Ok(nix), Err(_)) => Some(CustomTemplate {
-                            name: template_name,
-                            source_dir: dir,
-                            files: CustomFiles::Nix(nix),
-                        }),
-                        (Err(_), Ok(envrc)) => Some(CustomTemplate {
-                            name: template_name,
-                            source_dir: dir,
-                            files: CustomFiles::Envrc(envrc),
-                        }),
-                        (Ok(nix), Ok(envrc)) => Some(CustomTemplate {
-                            name: template_name,
-                            source_dir: dir,
-                            files: CustomFiles::Both { nix, envrc },
-                        }),
+                        (Ok(nix), Err(_)) => Some(CustomFiles::Nix(nix)),
+                        (Err(_), Ok(envrc)) => Some(CustomFiles::Envrc(envrc)),
+                        (Ok(nix), Ok(envrc)) => Some(CustomFiles::Both { nix, envrc }),
                     }
+                    .map(|files| CustomTemplate {
+                        name: template_name,
+                        source_dir: dir,
+                        files,
+                    })
+                    .map(Template::Custom)
                 })
-                .map(Template::Custom)
                 .or_else(|| {
                     included_templates
                         .get(&template_name as &str)
