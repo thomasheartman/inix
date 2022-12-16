@@ -1,5 +1,10 @@
 use common_macros::hash_map;
-use std::{env::current_dir, fs, io, path::PathBuf};
+use std::{
+    env::current_dir,
+    fmt::Display,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, ValueEnum};
@@ -79,7 +84,7 @@ fn try_get_target_dir(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum TemplateFiles {
     Nix(&'static str),
     // Envrc(&'static str),
@@ -89,42 +94,102 @@ enum TemplateFiles {
     },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct BuiltinTemplate {
     name: &'static str,
     files: TemplateFiles,
     source_dir: PathBuf,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum CustomFiles {
     Nix(String),
     Envrc(String),
     Both { nix: String, envrc: String },
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CustomTemplate<'a> {
     name: &'a str,
     files: CustomFiles,
     source_dir: PathBuf,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Template<'a> {
     Custom(CustomTemplate<'a>),
     Builtin(BuiltinTemplate),
 }
 
+impl<'a> Template<'a> {
+    fn name(&self) -> &'a str {
+        match self {
+            Template::Custom(template) => template.name,
+            Template::Builtin(template) => template.name,
+        }
+    }
+}
+
 fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>> {
+    #[derive(Clone, Copy, Debug)]
+    enum DirErrorReason {
+        NotADir,
+        NoConfigDir,
+        NotFound,
+    }
+
+    #[derive(Clone, Debug)]
+    struct DirError {
+        path: PathBuf,
+        reason: DirErrorReason,
+    }
+
+    impl Display for DirError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{} ({})", self.path.display(), match self.reason {
+                                DirErrorReason::NotADir =>
+                                    "which exists, but is not a directory (it's probably a file!)",
+                                DirErrorReason::NoConfigDir =>
+                                    "but I don't know where your user configuration directory is (this probably means that you're not on Linux, macOS, or Windows)",
+                                DirErrorReason::NotFound => "but it doesn't exist",
+                            }
+)
+        }
+    }
+
     // a prioritized list over where to find templates. Items listed earlier take precedence
-    let template_locations = [
-        dirs::config_dir().map(|dir| dir.join("inix")),
-        // Some(PathBuf::from("../templates")),
+    let template_locations: Vec<_> = [
+        dirs::config_dir()
+            .map(|dir| dir.join("inix"))
+            .ok_or(DirError {
+                path: PathBuf::from("<your user configuration directory>/inix"),
+                reason: DirErrorReason::NoConfigDir,
+            }),
+        // Ok(PathBuf::from("../templates")),
     ]
     .into_iter()
-    .filter_map(|x| x.and_then(|path| if path.is_dir() { Some(path) } else { None }))
-    .collect::<Vec<_>>();
+    .map(|result| {
+        result.and_then(|dir| {
+            if dir.is_dir() {
+                Ok(dir)
+            } else {
+                let reason = match dir.exists() {
+                    true => DirErrorReason::NotADir,
+                    false => DirErrorReason::NotFound,
+                };
+                Err(DirError {
+                    path: dir.clone(),
+                    reason,
+                })
+            }
+        })
+    })
+    .collect();
+
+    let found_template_dirs: Vec<_> = template_locations
+        .iter()
+        .filter_map(|x| x.as_deref().map(|y| y.clone()).ok())
+        .collect();
 
     let included_templates = hash_map! {
         "rust" => BuiltinTemplate {
@@ -144,7 +209,7 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
             name: "base",
             files: TemplateFiles::Both {
                 nix: include_str!("templates/base/shell.nix"),
-                envrc: include_str!("templates/base/.envrc"),
+              envrc: include_str!("templates/base/.envrc"),
             },
             source_dir: PathBuf::from("inix/templates")
         },
@@ -153,7 +218,7 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
     let (oks, errs): (Vec<_>, Vec<_>) = input_templates
         .iter()
         .map(|template_name| {
-            template_locations
+            found_template_dirs
                 .iter()
                 .find_map(|location| {
                     let dir = location.join(template_name);
@@ -191,12 +256,18 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
             I couldn't find these templates:
             {}
 
-            I looked in these directories:
+            I looked (or tried to look) in these places:
             {}",
             errs.iter().map(|name| format!("- {}", name)).join("\n"),
             template_locations
                 .iter()
-                .map(|location| format!("- {}", location.display()))
+                .map(|location| format!(
+                    "- {}",
+                    match location {
+                        Ok(l) => l.display().to_string(),
+                        Err(l) => l.to_string(),
+                    }
+                ))
                 .join("\n"),
         )))
     }
@@ -208,9 +279,6 @@ fn main() -> anyhow::Result<()> {
     // PREPARE //
 
     // check to see whether we can find all the templates
-
-    const RESERVED_NAMES: [&str; 2] = ["blank", "_"];
-
     let templates = try_get_templates(&cli.templates)?;
 
     // check to see if the target directory exists
@@ -243,11 +311,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     let inix_dir_state = if inix_dir.is_dir() {
-        let template_collisions = cli
-            .templates
+        let template_collisions = templates
+            .clone()
             .iter()
-            .filter(|template| inix_dir.join(template).is_dir())
-            .map(|t| t.as_ref())
+            .filter_map(|template| {
+                if inix_dir.join(template.name()).is_dir() {
+                    Some(template.name())
+                } else {
+                    None
+                }
+            })
             .collect();
 
         InixDirState::AlreadyExists {
