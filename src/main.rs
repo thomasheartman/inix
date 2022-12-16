@@ -1,5 +1,6 @@
 use common_macros::hash_map;
 use std::{
+    collections::HashMap,
     env::current_dir,
     fmt::Display,
     fs, io,
@@ -8,7 +9,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, ValueEnum};
-use indoc::formatdoc;
+use indoc::{formatdoc, indoc, writedoc};
 use itertools::Itertools;
 use rustyline::{error::ReadlineError, Editor};
 
@@ -17,7 +18,7 @@ enum ConflictBehavior {
     Overwrite,
     MergeKeep,
     MergeReplace,
-    Abort,
+    Cancel,
 }
 
 #[derive(Parser)]
@@ -60,7 +61,7 @@ struct Cli {
     /// trying to add templates that already exist in the directory,
     /// remove the old templates and add the new ones.
     ///
-    /// abort: Stop the process without writing any files.
+    /// cancel: Stop the process without writing any files.
     #[arg(long, value_enum)]
     on_conflict: Option<ConflictBehavior>,
 }
@@ -335,6 +336,17 @@ fn main() -> anyhow::Result<()> {
         description: String,
     }
 
+    let on_conflict = match (inix_dir_state, cli.on_conflict) {
+        (_, Some(behavior)) => behavior,
+        (InixDirState::DoesNotExist, None) => ConflictBehavior::Cancel,
+        (
+            InixDirState::AlreadyExists {
+                template_collisions,
+            },
+            None,
+        ) => prompt_for_conflict_behavior(&inix_dir, &template_collisions)?,
+    };
+
     // let file_write_op: anyhow::Result<Operation> = match (&inix_dir_state, cli.on_conflict) {
     //     (InixDirState::DoesNotExist, _) => Ok(Operation {
     //         description: format!(
@@ -434,6 +446,140 @@ fn main() -> anyhow::Result<()> {
 
     //
     Ok(())
+}
+
+fn prompt_for_conflict_behavior(
+    inix_dir: &Path,
+    conflicting_templates: &[&str],
+) -> anyhow::Result<ConflictBehavior> {
+    let mut rl = Editor::<()>::new()?;
+
+    #[derive(Debug, Clone, Copy)]
+    struct PromptOption {
+        description: &'static str,
+        short_description: &'static str,
+    }
+
+    impl Display for PromptOption {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, r#"{} ({})"#, self.description, self.short_description)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct Prompt {
+        text: String,
+        options: HashMap<char, PromptOption>,
+    }
+
+    impl Prompt {
+        fn list_options(&self) -> String {
+            self.options
+                .iter()
+                .sorted_by_key(|(key, _)| *key)
+                .map(|(key, prompt_option)| format!("- {}: {}", key, prompt_option.to_string()))
+                .join("\n")
+        }
+
+        fn list_option_keys(&self) -> String {
+            let sorted_keys = self.options.keys().sorted();
+
+            let quote = |c| format!(r#""{}""#, c);
+
+            match self.options.len() {
+                2 => sorted_keys.map(quote).join(" and "),
+                len => {
+                    let add_and = if len > 2 {
+                        self.options.keys().max()
+                    } else {
+                        None
+                    };
+
+                    sorted_keys
+                        .map(|key| match add_and {
+                            Some(char) if key == char => format!(r#"and {}"#, quote(key)),
+                            _ => quote(key),
+                        })
+                        .join(", ")
+                }
+            }
+        }
+    }
+
+    impl Display for Prompt {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            writedoc!(
+                f,
+                r#"
+                {}
+
+                How would you like to proceed?
+                  {}
+
+                Please enter exactly one option (one of {} [case-insensitive])."#,
+                self.text,
+                self.list_options(),
+                self.list_option_keys()
+            )
+        }
+    }
+
+    let text = match conflicting_templates {
+        [] => Prompt {
+            options: hash_map! {
+                'A' => PromptOption {description:  "Merge the two inix directories, adding your new templates to the existing directory?", short_description: "merge" },
+                'B' => PromptOption{ description:  "Overwrite the whole directory, removing everything that's in it and replacing it with the new templates?", short_description: "overwrite" },
+                'C' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
+            },
+            text: formatdoc!(
+                r#"
+            The inix directory ("{}") already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
+
+            Please enter the option's letter."#,
+                inix_dir.display()
+            ),
+        },
+        _ => todo!(),
+    };
+
+    // Case enumeration
+
+    // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
+    // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
+    // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
+    // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
+
+    // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
+    // A:overwrite the entire inix directory (overwrite)
+    // B: only overwrite the subdirectories (merge_replace)
+    // C: or cancel the operation? (merge_keep)
+
+    loop {
+        println!(
+            r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
+            &inix_dir.display()
+        );
+        let readline = rl.readline(">> ");
+        match readline {
+            Ok(line) => {
+                println!("Line: {}", line)
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("CTRL-C");
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                println!("CTRL-D");
+                break;
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                break;
+            }
+        }
+    }
+
+    todo!()
 }
 
 #[cfg(test)]
