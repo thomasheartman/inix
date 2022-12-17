@@ -472,6 +472,29 @@ fn prompt_for_conflict_behavior(
         options: HashMap<char, PromptOption>,
     }
 
+    fn combine_strings<T, Item>(strings: T) -> String
+    where
+        Item: Display + Ord + Clone,
+        T: Iterator<Item = Item> + Clone,
+    {
+        let quote = |item: Item| format!(r#""{}""#, item.to_string());
+
+        match strings.clone().count() {
+            0 | 1 => strings.map(quote).collect(),
+            2 => strings.map(quote).join(" and "),
+            len => strings
+                .enumerate()
+                .map(|(index, value)| {
+                    if index == len - 1 {
+                        format!(r#"and {}"#, quote(value))
+                    } else {
+                        quote(value)
+                    }
+                })
+                .join(", "),
+        }
+    }
+
     impl Prompt {
         fn list_options(&self) -> String {
             self.options
@@ -482,27 +505,7 @@ fn prompt_for_conflict_behavior(
         }
 
         fn list_option_keys(&self) -> String {
-            let sorted_keys = self.options.keys().sorted();
-
-            let quote = |c| format!(r#""{}""#, c);
-
-            match self.options.len() {
-                2 => sorted_keys.map(quote).join(" and "),
-                len => {
-                    let add_and = if len > 2 {
-                        self.options.keys().max()
-                    } else {
-                        None
-                    };
-
-                    sorted_keys
-                        .map(|key| match add_and {
-                            Some(char) if key == char => format!(r#"and {}"#, quote(key)),
-                            _ => quote(key),
-                        })
-                        .join(", ")
-                }
-            }
+            combine_strings(self.options.keys().sorted())
         }
     }
 
@@ -539,7 +542,7 @@ fn prompt_for_conflict_behavior(
                 inix_dir.display()
             ),
         },
-        _ => todo!(),
+        templates => todo!(),
     };
 
     // Case enumeration
