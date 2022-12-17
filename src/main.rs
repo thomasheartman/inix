@@ -274,6 +274,11 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+enum TemplateCollisionsAmount {
+    All,
+    Some,
+}
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
@@ -308,11 +313,13 @@ fn main() -> anyhow::Result<()> {
     // gather all data about the inix dir
     enum InixDirState<'a> {
         DoesNotExist,
-        AlreadyExists { template_collisions: Vec<&'a str> },
+        AlreadyExists {
+            template_collisions: (Vec<&'a str>, TemplateCollisionsAmount),
+        },
     }
 
     let inix_dir_state = if inix_dir.is_dir() {
-        let template_collisions = templates
+        let template_collisions: Vec<&str> = templates
             .clone()
             .iter()
             .filter_map(|template| {
@@ -324,8 +331,14 @@ fn main() -> anyhow::Result<()> {
             })
             .collect();
 
+        let collision_amount = if template_collisions.len() == templates.len() {
+            TemplateCollisionsAmount::All
+        } else {
+            TemplateCollisionsAmount::Some
+        };
+
         InixDirState::AlreadyExists {
-            template_collisions,
+            template_collisions: (template_collisions, collision_amount),
         }
     } else {
         InixDirState::DoesNotExist
@@ -341,10 +354,10 @@ fn main() -> anyhow::Result<()> {
         (InixDirState::DoesNotExist, None) => ConflictBehavior::Cancel,
         (
             InixDirState::AlreadyExists {
-                template_collisions,
+                template_collisions: (template_collisions, collision_amount),
             },
             None,
-        ) => prompt_for_conflict_behavior(&inix_dir, &template_collisions)?,
+        ) => prompt_for_conflict_behavior(&inix_dir, (&template_collisions, collision_amount))?,
     };
 
     // let file_write_op: anyhow::Result<Operation> = match (&inix_dir_state, cli.on_conflict) {
@@ -450,7 +463,7 @@ fn main() -> anyhow::Result<()> {
 
 fn prompt_for_conflict_behavior(
     inix_dir: &Path,
-    conflicting_templates: &[&str],
+    (conflicting_templates, collision_amount): (&[&str], TemplateCollisionsAmount),
 ) -> anyhow::Result<ConflictBehavior> {
     let mut rl = Editor::<()>::new()?;
 
@@ -527,35 +540,46 @@ fn prompt_for_conflict_behavior(
         }
     }
 
-    let text = match conflicting_templates {
-        [] => Prompt {
+    let text = match (conflicting_templates, collision_amount) {
+        ([], _) => Prompt {
             options: hash_map! {
                 'A' => PromptOption {description:  "Merge the two inix directories, adding your new templates to the existing directory?", short_description: "merge" },
                 'B' => PromptOption{ description:  "Overwrite the whole directory, removing everything that's in it and replacing it with the new templates?", short_description: "overwrite" },
                 'C' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
             },
-            text: formatdoc!(
+            text: format!(
                 r#"
-            The inix directory ("{}") already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
-
-            Please enter the option's letter."#,
+            The inix directory ("{}") already exists, but none of the new templates conflict with existing subdirectories."#,
                 inix_dir.display()
             ),
         },
-        templates => todo!(),
+
+        (conflicts, TemplateCollisionsAmount::All) => Prompt {
+            text: format!(
+                r#"The inix directory ("{}") already exists, and all the templates that you're trying to add ({}) also exist already."#,
+                inix_dir.display(),
+                combine_strings(conflicts.iter())
+            ),
+            options: hash_map! {
+                'A' => PromptOption {description:  "Overwrite the entire inix directory, removing anything that exists there already.", short_description: "overwrite" },
+                'B' => PromptOption{ description:  "Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched.", short_description: "merge-replace" },
+                'C' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
+            },
+        },
+        (conflicts, TemplateCollisionsAmount::Some) => Prompt {
+            text: format!(
+                r#"The inix directory ("{}") already exists, and the following templates you're trying to add also exist in the inix directory: {}."#,
+                inix_dir.display(),
+                combine_strings(conflicts.iter())
+            ),
+            options: hash_map! {
+                'A' => PromptOption {description:  "Overwrite the entire inix directory, removing anything that exists there already.", short_description: "overwrite" },
+                'B' => PromptOption{ description:  "Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched.", short_description: "merge-replace" },
+                'C' => PromptOption{ description:  "Add your templates to the inix directory, but leaving any templates that exist already.", short_description: "merge-keep" },
+                'D' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
+            },
+        },
     };
-
-    // Case enumeration
-
-    // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
-    // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
-    // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
-    // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
-
-    // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
-    // A:overwrite the entire inix directory (overwrite)
-    // B: only overwrite the subdirectories (merge_replace)
-    // C: or cancel the operation? (merge_keep)
 
     loop {
         println!(
