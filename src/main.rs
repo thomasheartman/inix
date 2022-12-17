@@ -14,7 +14,7 @@ use indoc::{formatdoc, indoc, writedoc};
 use itertools::Itertools;
 use rustyline::{error::ReadlineError, Editor};
 
-#[derive(ValueEnum, Clone)]
+#[derive(ValueEnum, Clone, Copy, Debug)]
 enum ConflictBehavior {
     Overwrite,
     MergeKeep,
@@ -477,6 +477,7 @@ fn prompt_for_conflict_behavior(
     struct PromptOption {
         description: &'static str,
         short_description: &'static str,
+        conflict_behavior: ConflictBehavior,
     }
 
     impl Display for PromptOption {
@@ -536,7 +537,7 @@ fn prompt_for_conflict_behavior(
                 {}
 
                 How would you like to proceed?
-                  {}
+                {}
 
                 Please enter exactly one option (one of {} [case-insensitive])."#,
                 self.text,
@@ -546,12 +547,12 @@ fn prompt_for_conflict_behavior(
         }
     }
 
-    let text = match conflicting_templates {
+    let prompt = match conflicting_templates {
         TemplateCollisions::None => Prompt {
             options: hash_map! {
-                'A' => PromptOption {description:  "Merge the two inix directories, adding your new templates to the existing directory?", short_description: "merge" },
-                'B' => PromptOption{ description:  "Overwrite the whole directory, removing everything that's in it and replacing it with the new templates?", short_description: "overwrite" },
-                'C' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
+                'A' => PromptOption {description:"Merge the two inix directories, adding your new templates to the existing directory?",short_description:"merge", conflict_behavior: ConflictBehavior::MergeKeep },
+                'B' => PromptOption{description:"Overwrite the whole directory, removing everything that's in it and replacing it with the new templates?",short_description:"overwrite", conflict_behavior: ConflictBehavior::Overwrite },
+                'C' => PromptOption {description:"Cancel the operation",short_description:"cancel", conflict_behavior: ConflictBehavior::Cancel }
             },
             text: format!(
                 r#"
@@ -566,9 +567,10 @@ fn prompt_for_conflict_behavior(
                 combine_strings(conflicts.into_iter())
             ),
             options: hash_map! {
-                'A' => PromptOption {description:  "Overwrite the entire inix directory, removing anything that exists there already.", short_description: "overwrite" },
-                'B' => PromptOption{ description:  "Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched.", short_description: "merge-replace" },
-                'C' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
+                'A' =>
+                    PromptOption {description:"Overwrite the entire inix directory, removing anything that exists there already.",short_description:"overwrite", conflict_behavior: ConflictBehavior::Overwrite },
+                'B' => PromptOption{description:"Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched.",short_description:"merge-replace", conflict_behavior: ConflictBehavior::MergeReplace },
+                'C' => PromptOption {description:"Cancel the operation",short_description:"cancel", conflict_behavior: ConflictBehavior::Cancel }
             },
         },
         TemplateCollisions::Some(conflicts) => Prompt {
@@ -578,23 +580,27 @@ fn prompt_for_conflict_behavior(
                 combine_strings(conflicts.into_iter())
             ),
             options: hash_map! {
-                'A' => PromptOption {description:  "Overwrite the entire inix directory, removing anything that exists there already.", short_description: "overwrite" },
-                'B' => PromptOption{ description:  "Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched.", short_description: "merge-replace" },
-                'C' => PromptOption{ description:  "Add your templates to the inix directory, but leaving any templates that exist already.", short_description: "merge-keep" },
-                'D' => PromptOption { description: "Cancel the operation", short_description: "cancel" }
+                'A' => PromptOption {description:"Overwrite the entire inix directory, removing anything that exists there already.",short_description:"overwrite", conflict_behavior: ConflictBehavior::Overwrite },
+                'B' => PromptOption{description:"Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched.",short_description:"merge-replace", conflict_behavior: ConflictBehavior::MergeReplace },
+                'C' => PromptOption{description:"Add your templates to the inix directory, but leaving any templates that exist already.",short_description:"merge-keep", conflict_behavior: ConflictBehavior::MergeKeep },
+                'D' => PromptOption {description:"Cancel the operation",short_description:"cancel", conflict_behavior: ConflictBehavior::Cancel }
             },
         },
     };
 
     loop {
-        println!(
-            r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
-            &inix_dir.display()
-        );
+        println!("{}", prompt);
         let readline = rl.readline(">> ");
         match readline {
             Ok(line) => {
-                println!("Line: {}", line)
+                match prompt
+                    .options
+                    .iter()
+                    .find(|(c, _)| line.trim().eq_ignore_ascii_case(&*c.to_string()))
+                {
+                    Some((_, option)) => return Ok(option.conflict_behavior),
+                    None => println!("Sorry, I don't understand what you mean. Please use only the character corresponding to the option you want."),
+                }
             }
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");
