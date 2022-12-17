@@ -366,13 +366,8 @@ fn main() -> anyhow::Result<()> {
         ) => prompt_for_conflict_behavior(&inix_dir, &template_collisions)?,
     };
 
-    // let file_write_op: anyhow::Result<Operation> = match (&inix_dir_state, cli.on_conflict) {
-    //     (InixDirState::DoesNotExist, _) => Ok(Operation {
-    //         description: format!(
-    //             r#"I will create the `inix` directory "{}" and a subdirectory for each of the provided templates: "{}""#,
-    //             inix_dir.display(),
-    //             cli.templates.join(", ")
-    //         ),
+    println!("On conflict I will: {:?}", on_conflict);
+
     //         perform_operation: &|| {
     //             let _ = fs::create_dir_all(inix_dir).with_context(|| {
     //                 format!(
@@ -394,70 +389,6 @@ fn main() -> anyhow::Result<()> {
     //                 Ok::<(), anyhow::Error>(())
     //             });
     //             Ok(())
-    //         },
-    //     }),
-    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Abort)) => bail!(
-    //         r#""{}" already exists. Because you have asked me to abort on conflicts, I cannot proceed any further."#,
-    //         inix_dir.display()
-    //     ),
-    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::Overwrite)) => todo!(),
-    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeKeep)) => todo!(),
-    //     (InixDirState::AlreadyExists { .. }, Some(ConflictBehavior::MergeReplace)) => todo!(),
-    //     (InixDirState::AlreadyExists { .. }, None) => todo!("Put user interaction stuff here."),
-    // };
-    // match inix_dir_state {
-    //     InixDirState::DoesNotExist => {}
-    //     InixDirState::AlreadyExists {
-    //         template_collisions,
-    //     } => {
-    //         let mut rl = Editor::<()>::new()?;
-
-    //         // Case enumeration
-
-    //         // The inix directory already exists, but none of the new templates conflict with existing subdirectories. Would you like to:
-    //         // A: Merge the two inix directories, adding your new templates to the existing directory? (merge_x)
-    //         // B: Overwrite the whole directory, removing everything that's in it and replacing it with the new templates? (overwrite)
-
-    //         // The inix directory already exists, and the following templates you're trying to add also exist in the inix directory: <templates>. Would you like to:
-    //         // A: Overwrite the entire inix directory, removing anything that exists there already. (overwrite)
-    //         // B: Add your templates to the inix directory, overwriting any templates that are there already, but leaving other templates untouched. (merge_replace)
-    //         // C: Add your templates to the inix directory, but leaving any templates that exist already (merge_keep)
-
-    //         // The inix directory already exists, and all the templates that you're trying to add also exist already. Would you like to:
-    //         // A:overwrite the entire inix directory (overwrite)
-    //         // B: only overwrite the subdirectories (merge_replace)
-    //         // C: or cancel the operation? (merge_keep)
-
-    //         loop {
-    //             println!(
-    //                 r#"The directory "{}" already exists. Overwrite completely? (y/N)"#,
-    //                 &inix_dir.display()
-    //             );
-    //             let readline = rl.readline(">> ");
-    //             match readline {
-    //                 Ok(line) => {
-    //                     println!("Line: {}", line)
-    //                 }
-    //                 Err(ReadlineError::Interrupted) => {
-    //                     println!("CTRL-C");
-    //                     break;
-    //                 }
-    //                 Err(ReadlineError::Eof) => {
-    //                     println!("CTRL-D");
-    //                     break;
-    //                 }
-    //                 Err(err) => {
-    //                     println!("Error: {:?}", err);
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
-
-    // If so, what about subdirectories? What do you want to do in case of conflicts?
-
-    // get templates
 
     // EXECUTE //
 
@@ -533,8 +464,7 @@ fn prompt_for_conflict_behavior(
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             writedoc!(
                 f,
-                r#"
-                {}
+                r#"{}
 
                 How would you like to proceed?
                 {}
@@ -588,10 +518,16 @@ fn prompt_for_conflict_behavior(
         },
     };
 
+    println!();
+    println!("{}", prompt);
     loop {
-        println!("{}", prompt);
+        println!();
+        println!(r#"Tip: You can enter "?" to display the options again."#);
         let readline = rl.readline(">> ");
         match readline {
+            Ok(line) if line.trim() == "?" => {
+                println!("{}", prompt);
+            }
             Ok(line) => {
                 match prompt
                     .options
@@ -599,25 +535,19 @@ fn prompt_for_conflict_behavior(
                     .find(|(c, _)| line.trim().eq_ignore_ascii_case(&*c.to_string()))
                 {
                     Some((_, option)) => return Ok(option.conflict_behavior),
-                    None => println!("Sorry, I don't understand what you mean. Please use only the character corresponding to the option you want."),
+                    None => println!("\nSorry, I don't understand what you mean. Please use only the character corresponding to the option you want."),
                 }
             }
-            Err(ReadlineError::Interrupted) => {
-                println!("CTRL-C");
-                break;
-            }
-            Err(ReadlineError::Eof) => {
-                println!("CTRL-D");
-                break;
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+                println!("\nUnderstood. I'll cancel the operation.");
+                bail!("The operation was cancelled.");
             }
             Err(err) => {
-                println!("Error: {:?}", err);
-                break;
+                println!("\nErr, I got an error that I don't understand: {:?}", err);
+                println!("\nPlease try again or quit the program (Ctrl+C)");
             }
         }
     }
-
-    todo!()
 }
 
 #[cfg(test)]
