@@ -1,9 +1,10 @@
 { pkgs ? import <nixpkgs> {
-  overlays = [
-    (import (builtins.fetchTarball
-      "https://github.com/mozilla/nixpkgs-mozilla/archive/master.tar.gz"))
-  ];
-} }:
+    overlays = [
+      (import (builtins.fetchTarball
+        "https://github.com/mozilla/nixpkgs-mozilla/archive/master.tar.gz"))
+    ];
+  }
+}:
 with pkgs;
 let
 
@@ -13,16 +14,21 @@ let
     ];
   };
 
-  in
+  os = builtins.currentSystem;
+  platformSpecificInputs = if lib.hasInfix "darwin" os then [ ] else [ cargo-watch ];
+
+
+in
 
 pkgs.mkShell {
-  buildInputs = [
-    cargo-watch
-    rust
+  buildInputs =
+    platformSpecificInputs ++
+    [
+      rust
 
-    taplo-cli # add taplo for LSP support for toml files
+      taplo-cli # add taplo for LSP support for toml files
 
-    # keep this line if you use bash
-    pkgs.bashInteractive
-  ];
+      # keep this line if you use bash
+      pkgs.bashInteractive
+    ];
 }
