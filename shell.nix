@@ -14,8 +14,8 @@ let
     ];
   };
 
-  os = builtins.currentSystem;
-  platformSpecificInputs = if lib.hasInfix "darwin" os then [ ] else [ cargo-watch ];
+  systemNameContains = (lib.flip lib.hasInfix) builtins.currentSystem;
+  platformSpecificInputs = if systemNameContains "darwin" then [ ] else [ cargo-watch ];
 
 
 in
