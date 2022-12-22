@@ -15,17 +15,13 @@ let
   };
 
   systemNameContains = (lib.flip lib.hasInfix) builtins.currentSystem;
-  platformSpecificInputs =
-    if systemNameContains "darwin" then [
-      libiconv # seems macOS needs this as an extra dependency for some reason.
-    ] else [ cargo-watch ];
+
+  osSpecific =
+    if systemNameContains "darwin" then { packages = [ ]; buildInputs = [ libiconv ]; }
+    else { packages = [ cargo-watch ]; buildInputs = [ ]; };
 
 
-in
-
-pkgs.mkShell {
-  buildInputs =
-    platformSpecificInputs ++
+  packages = osSpecific.packages ++
     [
       rust
 
@@ -40,4 +36,12 @@ pkgs.mkShell {
           text = ''cargo run -- "$@"'';
         })
     ];
+
+  inputsFrom = osSpecific.buildInputs;
+
+
+in
+
+pkgs.mkShell {
+  inherit inputsFrom packages;
 }
