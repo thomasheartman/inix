@@ -15,7 +15,10 @@ let
   };
 
   systemNameContains = (lib.flip lib.hasInfix) builtins.currentSystem;
-  platformSpecificInputs = if systemNameContains "darwin" then [ ] else [ cargo-watch ];
+  platformSpecificInputs =
+    if systemNameContains "darwin" then [
+      libiconv # seems macOS needs this as an extra dependency for some reason.
+    ] else [ cargo-watch ];
 
 
 in
