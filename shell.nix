@@ -30,5 +30,11 @@ pkgs.mkShell {
 
       # keep this line if you use bash
       pkgs.bashInteractive
+
+      (pkgs.writeShellApplication
+        {
+          name = "run";
+          text = ''cargo run -- "$@"'';
+        })
     ];
 }
