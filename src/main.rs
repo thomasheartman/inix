@@ -355,17 +355,17 @@ fn main() -> anyhow::Result<()> {
     };
 
     // does the inix subdirectory already exist?
-    let inix_dir = target_dir.join("inix");
+    let inix_dir_path = target_dir.join("inix");
 
     // gather all data about the inix dir
 
     let inix_dir = {
-        let state = if inix_dir.is_dir() {
+        let state = if inix_dir_path.is_dir() {
             let conflicting_templates: Vec<&str> = templates
                 .clone()
                 .iter()
                 .filter_map(|template| {
-                    if inix_dir.join(template.name()).is_dir() {
+                    if inix_dir_path.join(template.name()).is_dir() {
                         Some(template.name())
                     } else {
                         None
@@ -393,7 +393,7 @@ fn main() -> anyhow::Result<()> {
 
         InixDir {
             state,
-            path: &inix_dir,
+            path: &inix_dir_path,
         }
     };
 
@@ -440,6 +440,34 @@ fn main() -> anyhow::Result<()> {
                 template_collisions,
             } => {
                 println!("{}", inix_dir.conflict_description());
+
+                let msg =
+                match (on_conflict, template_collisions) {
+                    (ConflictBehavior::Overwrite, _) => format!(r#"Because you have chosen to overwrite the inix directory on conflicts, I will delete the existing directory ("{}") and recreate it with the templates you have chosen ({})."#, inix_dir.path.display(), combine_strings(templates.iter().map(|t| t.name()))),
+                    (ConflictBehavior::MergeKeep, TemplateCollisions::Some(ts) ) => {
+                        format!(r#"Because you have chosen the merge (keep) option, I will merge the old and the new directories. These new templates will be added: {}"#, combine_strings(templates.filter(|t| !ts.contains(t.name))))
+                    },
+                    (ConflictBehavior::MergeKeep, TemplateCollisions::None) => {
+                        format!(r#"Because you have chosen the merge (keep) option, I will merge the old and the new directories. These new templates will be added: {}"#, combine_strings(templates.filter(|t| !ts.contains(t.name))))
+                    },
+                    (ConflictBehavior::MergeKeep, TemplateCollisions::All) => {
+                        format!(r#"Because you have chosen the merge (keep) option, I will merge the old and the new directories. These new templates will be added: {}"#, combine_strings(templates.filter(|t| !ts.contains(t.name))))
+                    },
+
+                    // Keep enumerating the different options, and writing things out.
+
+
+                    ConflictBehavior::MergeReplace => {
+                        "merge the existing directory with the new one, replacing existing files on collisions"
+                    }
+                    ConflictBehavior::Cancel => "cancel the operation and exit",
+                };
+
+                // match template_collisions {
+                //     TemplateCollisions::None => todo!(),
+                //     TemplateCollisions::All(_) => todo!(),
+                //     TemplateCollisions::Some(_) => todo!(),
+                // }
 
                 // figure out how to write out the different descriptions
 
