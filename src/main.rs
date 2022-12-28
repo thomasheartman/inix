@@ -4,7 +4,8 @@ use std::{
     collections::HashMap,
     env::current_dir,
     fmt::Display,
-    fs, io,
+    fs::{self, create_dir_all, remove_dir_all},
+    io,
     path::{Path, PathBuf},
 };
 
@@ -128,6 +129,13 @@ impl<'a> Template<'a> {
         match self {
             Template::Custom(template) => template.name,
             Template::Builtin(template) => template.name,
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        match self {
+            Template::Custom(template) => template.source_dir.join(template.name),
+            Template::Builtin(template) => template.source_dir.join(template.name),
         }
     }
 }
@@ -479,12 +487,100 @@ fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        // do stuff
+        // copy templates over (into an inix directory)
+        match (inix_dir.state, on_conflict) {
+            (InixDirState::DoesNotExist, _) => {
+                let dir = create_dir_all(inix_dir.path).with_context(|| {
+                    format!(
+                        r#"I was unable to create the inix directory "{}"."#,
+                        inix_dir.path.display()
+                    )
+                })?;
+                for template in templates {
+                    let target = inix_dir.path.join(template.name());
+                    fs::copy(template.path(), target).with_context(|| {
+                        format!(
+                            r#"I was unable to copy the {} template from "{}" to "{}"."#,
+                            template.name(),
+                            template.path().display(),
+                            target.display()
+                        )
+                    })?;
+                }
+            }
+
+            (InixDirState::AlreadyExists { .. }, ConflictBehavior::Overwrite) => {
+                remove_dir_all(inix_dir_path)?;
+                let dir = create_dir_all(inix_dir.path).with_context(|| {
+                    format!(
+                        r#"I was unable to create the inix directory "{}"."#,
+                        inix_dir.path.display()
+                    )
+                })?;
+                for template in templates {
+                    let target = inix_dir.path.join(template.name());
+                    fs::copy(template.path(), target).with_context(|| {
+                        format!(
+                            r#"I was unable to copy the {} template from "{}" to "{}"."#,
+                            template.name(),
+                            template.path().display(),
+                            target.display()
+                        )
+                    })?;
+                }
+            }
+            (
+                InixDirState::AlreadyExists {
+                    template_collisions,
+                },
+                ConflictBehavior::MergeKeep,
+            ) => {
+                let templates_to_copy = match template_collisions {
+                    TemplateCollisions::Some(ts) => templates
+                        .iter()
+                        .filter(|t| !ts.contains(&t.name()))
+                        .map(|t| *t)
+                        .collect(),
+                    TemplateCollisions::None => templates,
+                    TemplateCollisions::All(_) => vec![],
+                };
+
+                for template in templates_to_copy {
+                    let target = inix_dir.path.join(template.name());
+                    fs::copy(template.path(), target).with_context(|| {
+                        format!(
+                            r#"I was unable to copy the {} template from "{}" to "{}"."#,
+                            template.name(),
+                            template.path().display(),
+                            target.display()
+                        )
+                    })?;
+                }
+            }
+            (InixDirState::AlreadyExists { .. }, ConflictBehavior::MergeReplace) => {
+                for template in templates {
+                    let target = inix_dir.path.join(template.name());
+                    fs::copy(template.path(), target).with_context(|| {
+                        format!(
+                            r#"I was unable to copy the {} template from "{}" to "{}"."#,
+                            template.name(),
+                            template.path().display(),
+                            target.display()
+                        )
+                    })?;
+                }
+            }
+            (
+                InixDirState::AlreadyExists {
+                    template_collisions,
+                },
+                ConflictBehavior::Cancel,
+            ) => {
+                // intentionally left blank
+            }
+        }
     }
 
-    // copy templates over (into an inix directory)
-
-    //
     Ok(())
 }
 
