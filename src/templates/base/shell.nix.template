@@ -1,0 +1,28 @@
+{ pkgs ? import <nixpkgs> { } }:
+
+let
+
+  # for each child shell
+{{ #each templates }}
+  {{template}} = ./inix/{{template}}/shell.nix { };
+{{ /each }}
+
+in
+pkgs.mkShell {
+  inputsFrom =
+
+{{ #each templates }}
+  {{template}}.inputsFrom ++
+{{ /each }}
+    [
+      # extra inputs
+    ]
+
+  packages =
+{{ #each templates }}
+  {{template}}.packages ++
+{{ /each }}
+    [
+      # extra packages
+    ];
+}

@@ -8,4 +8,6 @@ else
 fi
 
 # source dependent files
-source_env_if_exists inix/<template>/.envrc
+{{ #each templates }}
+source_env_if_exists inix/{{ this }}/.envrc
+{{ /each }}

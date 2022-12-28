@@ -17,6 +17,7 @@ anyhow = "1.0.66"
 clap = { version = "4.0.29", features = ["derive"] }
 common_macros = "0.1.1"
 dirs = "4.0.0"
+handlebars = { version = "4.3.6", default-features = false }
 indoc = "1.0.7"
 itertools = "0.10.5"
 nonempty = { version = "0.8.1", default-features = false }

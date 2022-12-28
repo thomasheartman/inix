@@ -581,6 +581,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // render base templates
+
+    let mut reg = Handlebars::new();
+
+    // reg.render_file()
+
     Ok(())
 }
 
