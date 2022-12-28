@@ -28,9 +28,9 @@ let
       taplo-cli # add taplo for LSP support for toml files
 
       # keep this line if you use bash
-      pkgs.bashInteractive
+      bashInteractive
 
-      (pkgs.writeShellApplication
+      (writeShellApplication
         {
           name = "run";
           text = ''cargo run -- "$@"'';
