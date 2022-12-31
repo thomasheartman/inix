@@ -28,3 +28,17 @@ Because it's a pain to always either copy or create these files from scratch. [[
 
 - [ ] Config file support
 - [ ] Collect all errors before exiting: don't stop at the first error you encounter. Instead check everything that you can, and report all the errors you find.
+
+*** To do
+
+*** TODO Handle existing .envrc/nix files
+:LOGBOOK:
+- State "TODO"       from              [2022-12-31 Sat 15:57]
+:END:
+
+If they exist, what do we do?
+
+- Overwrite :: overwrite
+- Merge keep :: Rename them (~shell.nix(1)~, for instance). Make the rename them and store them in a directory so that you can keep them in sync. E.g. ~inix/generation-1/{shell.nix}~ , ~inix/generation-2/{shell.nix, .envrc}~.
+- Merge overwrite :: Overwrite existing files
+- Cancel ::  cancel
