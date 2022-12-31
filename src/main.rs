@@ -1,4 +1,5 @@
 use common_macros::hash_map;
+use handlebars::Handlebars;
 use nonempty::NonEmpty;
 use std::{
     collections::HashMap,
@@ -140,6 +141,30 @@ impl<'a> Template<'a> {
     }
 }
 
+const INCLUDED_TEMPLATES: HashMap<&str, BuiltinTemplate> = hash_map! {
+    "rust" => BuiltinTemplate {
+        name: "rust",
+        files: TemplateFiles::Nix(include_str!("templates/rust/shell.nix")),
+        source_dir: PathBuf::from("inix/templates")
+    },
+    "node" => BuiltinTemplate {
+        name: "node",
+        files: TemplateFiles::Both {
+            nix: include_str!("templates/node/shell.nix"),
+            envrc: include_str!("templates/node/.envrc"),
+        },
+        source_dir: PathBuf::from("inix/templates")
+    },
+    "base" => BuiltinTemplate {
+        name: "base",
+        files: TemplateFiles::Both {
+            nix: include_str!("templates/base/shell.nix.template"),
+          envrc: include_str!("templates/base/.envrc.template"),
+        },
+        source_dir: PathBuf::from("inix/templates")
+    },
+};
+
 fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>> {
     #[derive(Clone, Copy, Debug)]
     enum DirErrorReason {
@@ -201,30 +226,6 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
         .filter_map(|x| x.as_deref().map(|y| y.clone()).ok())
         .collect();
 
-    let included_templates = hash_map! {
-        "rust" => BuiltinTemplate {
-            name: "rust",
-            files: TemplateFiles::Nix(include_str!("templates/rust/shell.nix")),
-            source_dir: PathBuf::from("inix/templates")
-        },
-        "node" => BuiltinTemplate {
-            name: "node",
-            files: TemplateFiles::Both {
-                nix: include_str!("templates/node/shell.nix"),
-                envrc: include_str!("templates/node/.envrc"),
-            },
-            source_dir: PathBuf::from("inix/templates")
-        },
-        "base" => BuiltinTemplate {
-            name: "base",
-            files: TemplateFiles::Both {
-                nix: include_str!("templates/base/shell.nix"),
-              envrc: include_str!("templates/base/.envrc"),
-            },
-            source_dir: PathBuf::from("inix/templates")
-        },
-    };
-
     let (oks, errs): (Vec<_>, Vec<_>) = input_templates
         .iter()
         .map(|template_name| {
@@ -250,7 +251,7 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
                     })
                 })
                 .or_else(|| {
-                    included_templates
+                    INCLUDED_TEMPLATES
                         .get(&template_name as &str)
                         .map(|t| Template::Builtin(t.clone()))
                 })
@@ -583,9 +584,32 @@ fn main() -> anyhow::Result<()> {
 
     // render base templates
 
-    let mut reg = Handlebars::new();
+    let handlebars = Handlebars::new();
+
+    let nix_template = {
+        match INCLUDED_TEMPLATES.get("base").unwrap().files {
+            TemplateFiles::Both { nix, .. } => nix,
+            TemplateFiles::Nix(_) | _ => unreachable!(),
+        }
+    };
 
     // reg.render_file()
+    // for now, let's just print it to standard out?
+    let output = handlebars
+        .render(
+            nix_template,
+            &format!(
+                r#"{{ "templates": [ {} ] }}"#,
+                // templates
+                ["rust"]
+                    .into_iter()
+                    // .map(|t| format!(r#""{}""#, t.name()))
+                    .join(",")
+            ),
+        )
+        .unwrap();
+
+    println!("{output}");
 
     Ok(())
 }
@@ -683,7 +707,7 @@ fn prompt_for_conflict_behavior(
             },
             text: inix_dir.conflict_description(),
         },
-        TemplateCollisions::All(conflicts) => Prompt {
+        TemplateCollisions::All(_) => Prompt {
             text: inix_dir.conflict_description(),
             options: hash_map! {
                 'A' =>
@@ -719,10 +743,7 @@ fn prompt_for_conflict_behavior(
                     .iter()
                     .find(|(c, _)| line.trim().eq_ignore_ascii_case(&*c.to_string()))
                 {
-                    Some((_, option)) => return Ok(ConflictSummary {
-                        behavior: option.conflict_behavior,
-                        description: prompt.text,
-                    }),
+                    Some((_, option)) => return Ok(option.conflict_behavior),
                     None => println!("\nSorry, I don't understand what you mean. Please use only the character corresponding to the option you want."),
                 }
             }
