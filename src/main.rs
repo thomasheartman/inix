@@ -120,72 +120,70 @@ struct CustomTemplate<'a> {
 }
 
 #[derive(Clone, Debug)]
-enum Template<'a> {
-    Custom(CustomTemplate<'a>),
-    Builtin(BuiltinTemplate),
+enum TemplateFiles2 {
+    Nix(String),
+    Envrc(String),
+    Both { nix: String, envrc: String },
 }
 
-impl<'a> Template<'a> {
-    fn name(&self) -> &'a str {
-        match self {
-            Template::Custom(template) => template.name,
-            Template::Builtin(template) => template.name,
-        }
+#[derive(Clone, Debug, Copy)]
+enum TemplateType {
+    Custom,
+    Builtin,
+}
+
+#[derive(Clone, Debug)]
+struct Template2 {
+    name: String,
+    files: TemplateFiles2,
+    source_dir: PathBuf,
+    template_type: TemplateType,
+}
+
+impl Template2 {
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn path(&self) -> PathBuf {
-        match self {
-            Template::Custom(template) => template.source_dir.join(template.name),
-            Template::Builtin(template) => template.source_dir.join(template.name),
-        }
+        self.source_dir.join(self.name.to_string())
     }
 
-    fn files(&self) -> Vec<(&'static str, &'a str)> {
-        match &self {
-            Template::Custom(t) => match &t.files {
-                CustomFiles::Nix(content) => vec![("shell.nix", &content)],
-                CustomFiles::Envrc(content) => vec![(".envrc", &content)],
-                CustomFiles::Both { nix, envrc } => {
-                    vec![(".envrc", &envrc), ("shell.nix", &nix)]
-                }
-            },
-            Template::Builtin(t) => match &t.files {
-                TemplateFiles::Nix(content) => vec![("shell.nix", &content)],
-                TemplateFiles::Both { nix, envrc } => {
-                    vec![(".envrc", &envrc), ("shell.nix", &nix)]
-                }
-            },
+    fn files(&self) -> Vec<(&'static str, &str)> {
+        match &self.files {
+            TemplateFiles2::Nix(content) => vec![("shell.nix", &content)],
+            TemplateFiles2::Envrc(content) => vec![(".envrc", &content)],
+            TemplateFiles2::Both { nix, envrc } => {
+                vec![(".envrc", &envrc), ("shell.nix", &nix)]
+            }
         }
     }
 }
 
-fn included_templates() -> HashMap<&'static str, BuiltinTemplate> {
+fn included_templates() -> HashMap<&'static str, Template2> {
     hash_map! {
-        "rust" => BuiltinTemplate {
-            name: "rust",
-            files: TemplateFiles::Nix(include_str!("templates/rust/shell.nix")),
-            source_dir: PathBuf::from("inix/templates")
-        },
-        "node" => BuiltinTemplate {
-            name: "node",
-            files: TemplateFiles::Both {
-                nix: include_str!("templates/node/shell.nix"),
-                envrc: include_str!("templates/node/.envrc"),
+        "rust" => Template2 {name:"rust".into(),files:TemplateFiles2::Nix(include_str!("templates/rust/shell.nix").into()),source_dir:PathBuf::from("inix/templates"), template_type: TemplateType::Builtin},
+        "node" => Template2 {
+            name: "node".into(),
+            files: TemplateFiles2::Both {
+                nix: include_str!("templates/node/shell.nix").into(),
+                envrc: include_str!("templates/node/.envrc").into(),
             },
             source_dir: PathBuf::from("inix/templates")
+                , template_type: TemplateType::Builtin
         },
-        "base" => BuiltinTemplate {
-            name: "base",
-            files: TemplateFiles::Both {
-                nix: include_str!("templates/base/shell.nix.template"),
-              envrc: include_str!("templates/base/.envrc.template"),
+        "base" =>  Template2 {
+            name: "base".into(),
+            files: TemplateFiles2::Both {
+                nix: include_str!("templates/base/shell.nix.template").into(),
+              envrc: include_str!("templates/base/.envrc.template").into(),
             },
-            source_dir: PathBuf::from("inix/templates")
+            source_dir: PathBuf::from("inix/templates"), template_type: TemplateType::Builtin
         },
     }
 }
 
-fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>> {
+fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template2>> {
     #[derive(Clone, Copy, Debug)]
     enum DirErrorReason {
         NotADir,
@@ -258,22 +256,21 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
                         fs::read_to_string(dir.join(".envrc")),
                     ) {
                         (Err(_), Err(_)) => None,
-                        (Ok(nix), Err(_)) => Some(CustomFiles::Nix(nix)),
-                        (Err(_), Ok(envrc)) => Some(CustomFiles::Envrc(envrc)),
-                        (Ok(nix), Ok(envrc)) => Some(CustomFiles::Both { nix, envrc }),
+                        (Ok(nix), Err(_)) => Some(TemplateFiles2::Nix(nix)),
+                        (Err(_), Ok(envrc)) => Some(TemplateFiles2::Envrc(envrc)),
+                        (Ok(nix), Ok(envrc)) => Some(TemplateFiles2::Both { nix, envrc }),
                     }
-                    .map(|files| {
-                        Template::Custom(CustomTemplate {
-                            name: template_name,
-                            source_dir: dir,
-                            files,
-                        })
+                    .map(|files| Template2 {
+                        name: template_name.to_owned(),
+                        source_dir: dir,
+                        files,
+                        template_type: TemplateType::Custom,
                     })
                 })
                 .or_else(|| {
                     included_templates()
                         .get(&template_name as &str)
-                        .map(|t| Template::Builtin(t.clone()))
+                        .map(|t| t.clone())
                 })
                 .ok_or_else(|| anyhow!(template_name.clone()))
         })
@@ -391,7 +388,6 @@ fn main() -> anyhow::Result<()> {
     let inix_dir = {
         let state = if inix_dir_path.is_dir() {
             let conflicting_templates: Vec<&str> = templates
-                .clone()
                 .iter()
                 .filter_map(|template| {
                     if inix_dir_path.join(template.name()).is_dir() {
@@ -465,7 +461,7 @@ fn main() -> anyhow::Result<()> {
             } => {
                 println!("{}", inix_dir.conflict_description());
 
-                let new_template_names = templates.iter().map(Template::name);
+                let new_template_names = templates.iter().map(Template2::name);
 
                 let msg =
                     // overwrite
@@ -512,16 +508,25 @@ fn main() -> anyhow::Result<()> {
                         inix_dir.path.display()
                     )
                 })?;
-                for template in templates {
+                for template in &templates {
                     let target = inix_dir.path.join(template.name());
-                    fs::copy(template.path(), &target).with_context(|| {
+                    create_dir_all(&target).with_context(|| {
                         format!(
-                            r#"I was unable to copy the "{}" template from "{}" to "{}"."#,
-                            template.name(),
-                            template.path().display(),
+                            r#"I was unable to create the template directory "{}"."#,
                             target.display()
                         )
                     })?;
+                    for (file_name, contents) in template.files() {
+                        let file = target.join(file_name);
+                        fs::write(&file, &contents).with_context(|| {
+                            format!(
+                                r#"I was unable to write the "{}" template (found at "{}") to "{}"."#,
+                                template.name(),
+                                template.path().display(),
+                                target.display()
+                            )
+                        })?
+                    }
                 }
             }
 
@@ -533,13 +538,19 @@ fn main() -> anyhow::Result<()> {
                         inix_dir.path.display()
                     )
                 })?;
-                for template in templates {
+                for template in &templates {
                     let target = inix_dir.path.join(template.name());
+                    create_dir_all(&target).with_context(|| {
+                        format!(
+                            r#"I was unable to create the template directory "{}"."#,
+                            target.display()
+                        )
+                    })?;
                     for (file_name, contents) in template.files() {
                         let file = target.join(file_name);
                         fs::write(&file, &contents).with_context(|| {
                             format!(
-                                r#"I was unable to copy the "{}" template from "{}" to "{}"."#,
+                                r#"I was unable to write the "{}" template (found at "{}") to "{}"."#,
                                 template.name(),
                                 template.path().display(),
                                 target.display()
@@ -560,17 +571,23 @@ fn main() -> anyhow::Result<()> {
                         .filter(|t| !ts.contains(&t.name()))
                         .map(|t| t.clone())
                         .collect(),
-                    TemplateCollisions::None => templates,
+                    TemplateCollisions::None => templates.clone(),
                     TemplateCollisions::All(_) => vec![],
                 };
 
                 for template in templates_to_copy {
                     let target = inix_dir.path.join(template.name());
+                    create_dir_all(&target).with_context(|| {
+                        format!(
+                            r#"I was unable to create the template directory "{}"."#,
+                            target.display()
+                        )
+                    })?;
                     for (file_name, contents) in template.files() {
                         let file = target.join(file_name);
                         fs::write(&file, &contents).with_context(|| {
                             format!(
-                                r#"I was unable to copy the "{}" template from "{}" to "{}"."#,
+                                r#"I was unable to write the "{}" template (found at "{}") to "{}"."#,
                                 template.name(),
                                 template.path().display(),
                                 target.display()
@@ -580,16 +597,25 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             (InixDirState::AlreadyExists { .. }, ConflictBehavior::MergeReplace) => {
-                for template in templates {
+                for template in &templates {
                     let target = inix_dir.path.join(template.name());
-                    fs::copy(template.path(), &target).with_context(|| {
+                    create_dir_all(&target).with_context(|| {
                         format!(
-                            r#"I was unable to copy the {} template from "{}" to "{}"."#,
-                            template.name(),
-                            template.path().display(),
+                            r#"I was unable to create the template directory "{}"."#,
                             target.display()
                         )
                     })?;
+                    for (file_name, contents) in template.files() {
+                        let file = target.join(file_name);
+                        fs::write(&file, &contents).with_context(|| {
+                            format!(
+                                r#"I was unable to write the "{}" template (found at "{}") to "{}"."#,
+                                template.name(),
+                                template.path().display(),
+                                target.display()
+                            )
+                        })?
+                    }
                 }
             }
             (InixDirState::AlreadyExists { .. }, ConflictBehavior::Cancel) => {
@@ -603,29 +629,27 @@ fn main() -> anyhow::Result<()> {
     let handlebars = Handlebars::new();
 
     let nix_template = {
-        match included_templates().get("base").unwrap().files {
-            TemplateFiles::Both { nix, .. } => nix,
-            TemplateFiles::Nix(_) => unreachable!(),
+        match &included_templates().get("base").unwrap().files {
+            TemplateFiles2::Both { nix, .. } => nix.clone(),
+            TemplateFiles2::Nix(_) | TemplateFiles2::Envrc(_) => unreachable!(),
         }
     };
 
+    let temp_templates = format!(
+        r#"{{ "templates": {} }}"#,
+        // templates
+        handlebars::to_json(["rust"])
+    );
     // reg.render_file()
     // for now, let's just print it to standard out?
+
     let output = handlebars
-        .render(
-            nix_template,
-            &format!(
-                r#"{{ "templates": [ {} ] }}"#,
-                // templates
-                ["rust"]
-                    .into_iter()
-                    // .map(|t| format!(r#""{}""#, t.name()))
-                    .join(",")
-            ),
-        )
+        .render_template(&nix_template, &temp_templates)
         .unwrap();
 
-    println!("{output}");
+    // todo: figure out why the template names aren't picked up
+
+    println!("{output}, {temp_templates}");
 
     Ok(())
 }
