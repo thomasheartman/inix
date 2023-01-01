@@ -17,7 +17,7 @@ let
   systemNameContains = (lib.flip lib.hasInfix) builtins.currentSystem;
 
   osSpecific =
-    if systemNameContains "darwin" then { packages = [ ]; buildInputs = [ libiconv ]; }
+    if systemNameContains "darwin" then { packages = [ libiconv ]; buildInputs = [ ]; }
     else { packages = [ cargo-watch ]; buildInputs = [ ]; };
 
 
