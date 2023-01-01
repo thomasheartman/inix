@@ -7,12 +7,12 @@ use std::{
     fmt::Display,
     fs::{self, create_dir_all, remove_dir_all},
     io,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, ValueEnum};
-use indoc::{formatdoc, indoc, writedoc};
+use indoc::{formatdoc, writedoc};
 use itertools::Itertools;
 use rustyline::{error::ReadlineError, Editor};
 
@@ -141,29 +141,31 @@ impl<'a> Template<'a> {
     }
 }
 
-const INCLUDED_TEMPLATES: HashMap<&str, BuiltinTemplate> = hash_map! {
-    "rust" => BuiltinTemplate {
-        name: "rust",
-        files: TemplateFiles::Nix(include_str!("templates/rust/shell.nix")),
-        source_dir: PathBuf::from("inix/templates")
-    },
-    "node" => BuiltinTemplate {
-        name: "node",
-        files: TemplateFiles::Both {
-            nix: include_str!("templates/node/shell.nix"),
-            envrc: include_str!("templates/node/.envrc"),
+fn included_templates() -> HashMap<&'static str, BuiltinTemplate> {
+    hash_map! {
+        "rust" => BuiltinTemplate {
+            name: "rust",
+            files: TemplateFiles::Nix(include_str!("templates/rust/shell.nix")),
+            source_dir: PathBuf::from("inix/templates")
         },
-        source_dir: PathBuf::from("inix/templates")
-    },
-    "base" => BuiltinTemplate {
-        name: "base",
-        files: TemplateFiles::Both {
-            nix: include_str!("templates/base/shell.nix.template"),
-          envrc: include_str!("templates/base/.envrc.template"),
+        "node" => BuiltinTemplate {
+            name: "node",
+            files: TemplateFiles::Both {
+                nix: include_str!("templates/node/shell.nix"),
+                envrc: include_str!("templates/node/.envrc"),
+            },
+            source_dir: PathBuf::from("inix/templates")
         },
-        source_dir: PathBuf::from("inix/templates")
-    },
-};
+        "base" => BuiltinTemplate {
+            name: "base",
+            files: TemplateFiles::Both {
+                nix: include_str!("templates/base/shell.nix.template"),
+              envrc: include_str!("templates/base/.envrc.template"),
+            },
+            source_dir: PathBuf::from("inix/templates")
+        },
+    }
+}
 
 fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>> {
     #[derive(Clone, Copy, Debug)]
@@ -251,7 +253,7 @@ fn try_get_templates(input_templates: &[String]) -> anyhow::Result<Vec<Template>
                     })
                 })
                 .or_else(|| {
-                    INCLUDED_TEMPLATES
+                    included_templates()
                         .get(&template_name as &str)
                         .map(|t| Template::Builtin(t.clone()))
                 })
@@ -307,7 +309,7 @@ struct InixDir<'a> {
 
 impl<'a> InixDir<'a> {
     fn conflict_description(&self) -> String {
-        match self.state {
+        match &self.state {
             InixDirState::DoesNotExist => format!(
                 r#"The inix directory ({}) does not exist."#,
                 self.path.display()
@@ -406,15 +408,10 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let on_conflict = match (inix_dir.state, cli.on_conflict) {
+    let on_conflict = match (&inix_dir.state, cli.on_conflict) {
         (_, Some(behavior)) => behavior,
         (InixDirState::DoesNotExist, None) => ConflictBehavior::Cancel,
-        (
-            InixDirState::AlreadyExists {
-                template_collisions,
-            },
-            None,
-        ) => prompt_for_conflict_behavior(&inix_dir, &template_collisions)?,
+        (InixDirState::AlreadyExists { .. }, None) => prompt_for_conflict_behavior(&inix_dir)?,
     };
 
     // EXECUTE //
@@ -446,7 +443,7 @@ fn main() -> anyhow::Result<()> {
                 );
             }
             InixDirState::AlreadyExists {
-                template_collisions,
+                ref template_collisions,
             } => {
                 println!("{}", inix_dir.conflict_description());
 
@@ -465,7 +462,7 @@ fn main() -> anyhow::Result<()> {
                         format!(r#"Because you have chosen the merge (keep) option, I will merge the old and the new directories. There are no template collisions, so I will add these new templates: {}"#, combine_strings(new_template_names))
                     },
                     (ConflictBehavior::MergeKeep, TemplateCollisions::All(_)) => {
-                        format!(r#"Because you have chosen the merge (keep) option, I will merge the old and the new directories. However, all the templates you are trying to add ({}) already exist in the inix directory ("{}"), so I will not do anything."#, combine_strings(new_template_names) , inix_dir_path.display())
+                        format!(r#"Because you have chosen the merge (keep) option, I will merge the old and the new directories. However, all the templates you are trying to add ({}) already exist in the inix directory ("{}"), so I will not do anything."#, combine_strings(new_template_names) , inix_dir.path.display())
                     },
 
                     // merge (replace)
@@ -477,11 +474,11 @@ fn main() -> anyhow::Result<()> {
                     },
 
                     (ConflictBehavior::MergeReplace, TemplateCollisions::All(_)) => {
-                        format!(r#"Because you have chosen the merge (replace) option, I will merge the old and the new directories. All the templates you are trying to add already exist in the inix directory ("{}"). I will add the following templates: {}"#, inix_dir_path.display(), combine_strings(new_template_names) )
+                        format!(r#"Because you have chosen the merge (replace) option, I will merge the old and the new directories. All the templates you are trying to add already exist in the inix directory ("{}"). I will add the following templates: {}"#, inix_dir.path.display(), combine_strings(new_template_names) )
                     },
 
                     // cancel
-                    (ConflictBehavior::Cancel, _) => format!(r#"Because you have chosen the cancel option and the inix directory ("{}") already exists, I will not do anything"#, inix_dir_path.display())
+                    (ConflictBehavior::Cancel, _) => format!(r#"Because you have chosen the cancel option and the inix directory ("{}") already exists, I will not do anything"#, inix_dir.path.display())
                 };
 
                 println!("{msg}");
@@ -491,7 +488,7 @@ fn main() -> anyhow::Result<()> {
         // copy templates over (into an inix directory)
         match (inix_dir.state, on_conflict) {
             (InixDirState::DoesNotExist, _) => {
-                let dir = create_dir_all(inix_dir.path).with_context(|| {
+                let _ = create_dir_all(inix_dir.path).with_context(|| {
                     format!(
                         r#"I was unable to create the inix directory "{}"."#,
                         inix_dir.path.display()
@@ -499,7 +496,7 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 for template in templates {
                     let target = inix_dir.path.join(template.name());
-                    fs::copy(template.path(), target).with_context(|| {
+                    fs::copy(template.path(), &target).with_context(|| {
                         format!(
                             r#"I was unable to copy the {} template from "{}" to "{}"."#,
                             template.name(),
@@ -511,8 +508,8 @@ fn main() -> anyhow::Result<()> {
             }
 
             (InixDirState::AlreadyExists { .. }, ConflictBehavior::Overwrite) => {
-                remove_dir_all(inix_dir_path)?;
-                let dir = create_dir_all(inix_dir.path).with_context(|| {
+                remove_dir_all(inix_dir.path)?;
+                let _ = create_dir_all(inix_dir.path).with_context(|| {
                     format!(
                         r#"I was unable to create the inix directory "{}"."#,
                         inix_dir.path.display()
@@ -520,7 +517,7 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 for template in templates {
                     let target = inix_dir.path.join(template.name());
-                    fs::copy(template.path(), target).with_context(|| {
+                    fs::copy(template.path(), &target).with_context(|| {
                         format!(
                             r#"I was unable to copy the {} template from "{}" to "{}"."#,
                             template.name(),
@@ -540,7 +537,7 @@ fn main() -> anyhow::Result<()> {
                     TemplateCollisions::Some(ts) => templates
                         .iter()
                         .filter(|t| !ts.contains(&t.name()))
-                        .map(|t| *t)
+                        .map(|t| t.clone())
                         .collect(),
                     TemplateCollisions::None => templates,
                     TemplateCollisions::All(_) => vec![],
@@ -548,7 +545,7 @@ fn main() -> anyhow::Result<()> {
 
                 for template in templates_to_copy {
                     let target = inix_dir.path.join(template.name());
-                    fs::copy(template.path(), target).with_context(|| {
+                    fs::copy(template.path(), &target).with_context(|| {
                         format!(
                             r#"I was unable to copy the {} template from "{}" to "{}"."#,
                             template.name(),
@@ -561,7 +558,7 @@ fn main() -> anyhow::Result<()> {
             (InixDirState::AlreadyExists { .. }, ConflictBehavior::MergeReplace) => {
                 for template in templates {
                     let target = inix_dir.path.join(template.name());
-                    fs::copy(template.path(), target).with_context(|| {
+                    fs::copy(template.path(), &target).with_context(|| {
                         format!(
                             r#"I was unable to copy the {} template from "{}" to "{}"."#,
                             template.name(),
@@ -571,12 +568,7 @@ fn main() -> anyhow::Result<()> {
                     })?;
                 }
             }
-            (
-                InixDirState::AlreadyExists {
-                    template_collisions,
-                },
-                ConflictBehavior::Cancel,
-            ) => {
+            (InixDirState::AlreadyExists { .. }, ConflictBehavior::Cancel) => {
                 // intentionally left blank
             }
         }
@@ -587,9 +579,9 @@ fn main() -> anyhow::Result<()> {
     let handlebars = Handlebars::new();
 
     let nix_template = {
-        match INCLUDED_TEMPLATES.get("base").unwrap().files {
+        match included_templates().get("base").unwrap().files {
             TemplateFiles::Both { nix, .. } => nix,
-            TemplateFiles::Nix(_) | _ => unreachable!(),
+            TemplateFiles::Nix(_) => unreachable!(),
         }
     };
 
@@ -637,15 +629,7 @@ where
     }
 }
 
-struct ConflictSummary {
-    description: String,
-    behavior: ConflictBehavior,
-}
-
-fn prompt_for_conflict_behavior(
-    inix_dir: &InixDir,
-    conflicting_templates: &TemplateCollisions,
-) -> anyhow::Result<ConflictBehavior> {
+fn prompt_for_conflict_behavior(inix_dir: &InixDir) -> anyhow::Result<ConflictBehavior> {
     let mut rl = Editor::<()>::new()?;
 
     #[derive(Debug, Clone, Copy)]
@@ -698,6 +682,13 @@ fn prompt_for_conflict_behavior(
         }
     }
 
+    let conflicting_templates = match &inix_dir.state {
+        InixDirState::DoesNotExist => return Ok(ConflictBehavior::Cancel),
+        InixDirState::AlreadyExists {
+            template_collisions,
+        } => template_collisions,
+    };
+
     let prompt = match conflicting_templates {
         TemplateCollisions::None => Prompt {
             options: hash_map! {
@@ -716,7 +707,7 @@ fn prompt_for_conflict_behavior(
                 'C' => PromptOption {description:"Cancel the operation",short_description:"cancel", conflict_behavior: ConflictBehavior::Cancel }
             },
         },
-        TemplateCollisions::Some(conflicts) => Prompt {
+        TemplateCollisions::Some(_) => Prompt {
             text: inix_dir.conflict_description(),
             options: hash_map! {
                 'A' => PromptOption {description:"Overwrite the entire inix directory, removing anything that exists there already.",short_description:"overwrite", conflict_behavior: ConflictBehavior::Overwrite },
