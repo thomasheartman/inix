@@ -2,9 +2,8 @@
 
 let
 
-  # for each child shell
 {{ #each templates }}
-  {{template}} = ./inix/{{template}}/shell.nix { };
+  {{this}} = ./inix/{{this}}/shell.nix { };
 {{ /each }}
 
 in
@@ -12,7 +11,7 @@ pkgs.mkShell {
   inputsFrom =
 
 {{ #each templates }}
-  {{template}}.inputsFrom ++
+  {{this}}.inputsFrom ++
 {{ /each }}
     [
       # extra inputs
@@ -20,7 +19,7 @@ pkgs.mkShell {
 
   packages =
 {{ #each templates }}
-  {{template}}.packages ++
+  {{this}}.packages ++
 {{ /each }}
     [
       # extra packages

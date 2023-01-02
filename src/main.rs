@@ -635,21 +635,19 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    let temp_templates = format!(
-        r#"{{ "templates": {} }}"#,
-        // templates
-        handlebars::to_json(["rust"])
-    );
+    let handlebars_args = hash_map! {
+       "templates" =>  templates.iter().map(Template2::name).collect::<Vec<_>>()
+    };
     // reg.render_file()
     // for now, let's just print it to standard out?
 
     let output = handlebars
-        .render_template(&nix_template, &temp_templates)
+        .render_template(&nix_template, &handlebars_args)
         .unwrap();
 
     // todo: figure out why the template names aren't picked up
 
-    println!("{output}, {temp_templates}");
+    println!("{output}, {handlebars_args:?}");
 
     Ok(())
 }
