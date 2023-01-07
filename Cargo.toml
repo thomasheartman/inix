@@ -22,3 +22,4 @@ indoc = "1.0.7"
 itertools = "0.10.5"
 nonempty = { version = "0.8.1", default-features = false }
 rustyline = "10.0.0"
+tempfile = "3.3.0"
