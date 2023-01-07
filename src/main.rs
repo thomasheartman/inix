@@ -806,4 +806,26 @@ mod tests {
         use clap::CommandFactory;
         Cli::command().debug_assert()
     }
+
+    // Test cases
+    //
+    // - creates shell.nix, .envrc, and inix/* files
+    //
+    // - the resulting .envrc and shell.nix files actually works
+    //
+    // - creates any directories necessary if they don't exist
+    //
+    // - overwrites existing files and dirs if asked to
+    //
+    // - merge-replace: overwrites conflicting files
+    //
+    // - merge-keep: does not overwrite conflicting files
+    //
+    //   - if there are existing shell.nix and/or .envrc files: can
+    //   these be renamed with a timestamp and sourced? Or we could
+    //   give them "generations". If a conflicting is discovered, take
+    //   the highest generation found and make a new one. What if
+    //   there are gaps? E.g. gens 1,2,7? Then do gen 8.
+    //
+    // - cancel: cancels on existing files
 }

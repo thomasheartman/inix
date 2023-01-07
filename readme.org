@@ -28,6 +28,8 @@ Because it's a pain to always either copy or create these files from scratch. [[
 
 - [ ] Config file support
 - [ ] Collect all errors before exiting: don't stop at the first error you encounter. Instead check everything that you can, and report all the errors you find.
+- [ ] Fetch templates from URL (with optional version number)
+
 
 *** To do
 
