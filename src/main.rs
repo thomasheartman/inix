@@ -24,6 +24,12 @@ enum ConflictBehavior {
     Cancel,
 }
 
+impl Default for ConflictBehavior {
+    fn default() -> Self {
+        ConflictBehavior::Cancel
+    }
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
@@ -34,6 +40,7 @@ struct Cli {
 
     /// The directory to initialize.
     ///
+    /// If the directory does not already exist, then inix will try to create it.
     /// Defaults to your current directory if not provided.
     #[arg(short, long)]
     directory: Option<PathBuf>,
@@ -69,12 +76,24 @@ struct Cli {
     on_conflict: Option<ConflictBehavior>,
 }
 
+impl Default for Cli {
+    fn default() -> Self {
+        Self {
+            templates: Default::default(),
+            directory: Default::default(),
+            dry_run: Default::default(),
+            auto_allow: Default::default(),
+            on_conflict: Default::default(),
+        }
+    }
+}
+
 fn try_get_target_dir(input: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     match input {
         None => current_dir().context("Failed to read the current working directory."),
 
         Some(dir) => {
-            if dir.is_dir() {
+            if dir.is_dir() || !dir.exists() {
                 Ok(dir)
             } else {
                 Err(io::Error::from(io::ErrorKind::Other)).with_context(|| {
@@ -623,12 +642,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     // render base templates
-
     let handlebars = Handlebars::new();
 
-    let nix_template = {
+    let (nix_template, envrc_template) = {
         match &included_templates().get("base").unwrap().files {
-            TemplateFiles2::Both { nix, .. } => nix.clone(),
+            TemplateFiles2::Both { nix, envrc } => (nix.clone(), envrc.clone()),
             TemplateFiles2::Nix(_) | TemplateFiles2::Envrc(_) => unreachable!(),
         }
     };
@@ -636,14 +654,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let handlebars_args = hash_map! {
        "templates" =>  templates.iter().map(Template2::name).collect::<Vec<_>>()
     };
+
     // reg.render_file()
     // for now, let's just print it to standard out?
 
-    let output = handlebars
-        .render_template(&nix_template, &handlebars_args)
-        .unwrap();
+    handlebars.render_template_to_write(
+        &nix_template,
+        &handlebars_args,
+        &fs::File::create(target_dir.join("shell.nix"))?,
+    )?;
 
-    println!("{output}, {handlebars_args:?}");
+    handlebars.render_template_to_write(
+        &envrc_template,
+        &handlebars_args,
+        &fs::File::create(target_dir.join(".envrc"))?,
+    )?;
+    // .render_template(&nix_template, &handlebars_args)
+
+    // println!("{}", fs::read_to_string(inix_dir.path.join("shell.nix"))?);
+
+    // println!("{output}, {handlebars_args:?}");
 
     Ok(())
 }
@@ -800,6 +830,8 @@ fn prompt_for_conflict_behavior(inix_dir: &InixDir) -> anyhow::Result<ConflictBe
 
 #[cfg(test)]
 mod tests {
+
+    use proptest::prelude::*;
     use tempfile::tempdir;
 
     use super::*;
@@ -811,8 +843,59 @@ mod tests {
         Cli::command().debug_assert()
     }
 
+    fn test_inix(args: Cli, execute: impl FnOnce(PathBuf)) {
+        let target_dir = args
+            .directory
+            .unwrap_or(tempdir().expect("couldn't create a temp dir").path().into());
+
+        let args_p = Cli {
+            directory: Some(target_dir.clone()),
+            ..args
+        };
+
+        match run(args_p) {
+            Err(e) => assert!(
+                false,
+                r#"Running the inix program failed with an error: {e:?}"#
+            ),
+            Ok(_) => execute(target_dir),
+        }
+    }
+
+    fn power_set<'a, T>(a: &[T]) -> impl Iterator<Item = &[T]> {
+        std::iter::once([].as_ref()).chain(
+            (0..=a.len())
+                .tuple_combinations()
+                .map(move |(start, end)| &a[start..end]),
+        )
+    }
+
     // Test cases
     //
+    // - it completes successfully without templates
+    #[test]
+    fn it_works_without_provided_templates() {
+        test_inix(
+            Cli {
+                templates: vec![],
+                ..Default::default()
+            },
+            |target_dir| {
+                for expected_file in ["shell.nix", ".envrc"] {
+                    assert!(
+                        target_dir.join(expected_file).is_file(),
+                        r#"The file "/{expected_file}" does not exist or is not a file."#
+                    );
+                }
+                assert_eq!(
+                    false,
+                    target_dir.join("inix").exists(),
+                    r#"The /inix directory was created when it shouldn't have anything in it."#
+                );
+            },
+        )
+    }
+
     // - creates shell.nix, .envrc, and inix/* files
     // - creates any directories necessary if they don't exist
     #[test]
@@ -820,33 +903,28 @@ mod tests {
         let base_dir = tempdir().unwrap();
 
         let project_dir = base_dir.path().join("my/project");
-        create_dir_all(&project_dir).unwrap();
 
-        let args = Cli {
-            templates: vec!["node".into()],
-            directory: Some(project_dir.clone()),
-            dry_run: false,
-            auto_allow: false,
-            on_conflict: Some(ConflictBehavior::Overwrite),
-        };
+        for templates in power_set(&["rust", "node"]).filter(|set| set.len() > 0) {
+            // let strings = templates.
+            let args = Cli {
+                templates: vec![],
+                directory: Some(project_dir.clone()),
+                ..Default::default()
+            };
 
-        if let Err(e) = run(args) {
-            assert!(
-                false,
-                r#"Running the inix program failed with an error: {e:?}"#
-            )
-        };
-
-        for expected_file in [
-            "shell.nix",
-            ".envrc",
-            "inix/node/shell.nix",
-            "inix/node/.envrc",
-        ] {
-            assert!(
-                base_dir.path().join(expected_file).is_file(),
-                r#"The file "/{expected_file}" does not exist or is not a file."#
-            );
+            test_inix(args, |target_dir| {
+                for expected_file in [
+                    "shell.nix",
+                    ".envrc",
+                    "inix/node/shell.nix",
+                    "inix/node/.envrc",
+                ] {
+                    assert!(
+                        target_dir.join(expected_file).is_file(),
+                        r#"The file "/{expected_file}" does not exist or is not a file."#
+                    );
+                }
+            })
         }
     }
     //
@@ -857,73 +935,6 @@ mod tests {
     //
     // - overwrites existing files and dirs if asked to
 
-    #[test]
-    fn it_overwrites_files() {
-        fn power_set<'a, T>(a: &[T]) -> impl Iterator<Item = &[T]> {
-            std::iter::once([].as_ref()).chain(
-                (0..=a.len())
-                    .tuple_combinations()
-                    .map(move |(start, end)| &a[start..end]),
-            )
-        }
-        for case in power_set(&["shell.nix", ".envrc", "inix/bogus/shell.nix"]) {
-            println!("{case:?}");
-
-            let base_dir = tempdir().unwrap();
-
-            let args = Cli {
-                templates: vec!["node".into()],
-                directory: Some(base_dir.path().into()),
-                dry_run: false,
-                auto_allow: false,
-                on_conflict: Some(ConflictBehavior::Overwrite),
-            };
-
-            for path in case {
-                // make the required files
-                let file = base_dir.path().join(path);
-                let containing_dir = file.parent().unwrap();
-                let _ = create_dir_all(&containing_dir).unwrap();
-                fs::File::create(file).unwrap();
-            }
-
-            if let Err(e) = run(args) {
-                assert!(
-                    false,
-                    r#"Running the inix program failed with an error: {e:?}"#
-                )
-            };
-
-            for expected_file in [
-                "shell.nix",
-                ".envrc",
-                "inix/node/shell.nix",
-                "inix/node/.envrc",
-            ] {
-                assert!(
-                    base_dir.path().join(expected_file).exists(),
-                    r#"The file "/{expected_file}" does not exist."#
-                );
-            }
-
-            // the inix directory has been wiped
-            assert_eq!(
-                false,
-                base_dir.path().join("inix/bogus").exists(),
-                "The /inix/bogus directory still exists."
-            );
-
-            // files have been written with content
-            for file in [".envrc", "shell.nix"] {
-                let content = fs::read_to_string(base_dir.path().join(file));
-
-                assert!(
-                    content.map(|s| s.len()).unwrap_or(0) > 0,
-                    r#"The file "/{file}" has no content."#,
-                )
-            }
-        }
-    }
     //
     // - merge-replace: overwrites conflicting files
     //
@@ -938,4 +949,81 @@ mod tests {
     // - cancel: cancels on existing files
     //
     // - auto-allow performs the necessary functions
+    //
+    // - nothing is written if --dry-run is provided
+
+    proptest! {
+        #[test]
+        fn it_overwrites_files(subdirs: Vec<String>) {
+            for case in power_set(&["shell.nix", ".envrc", "inix"]) {
+                let base_dir = tempdir().unwrap();
+                let inix_dir = base_dir.path().join("inix");
+
+                let templates = vec!["node".into()];
+                let num_templates = templates.len();
+
+                let args = Cli {
+                    templates,
+                    directory: Some(base_dir.path().into()),
+                    dry_run: false,
+                    auto_allow: false,
+                    on_conflict: Some(ConflictBehavior::Overwrite),
+                };
+
+                for path in case {
+                    // make the required files
+                    if path == &"inix" {
+                        for dir in subdirs.iter() {
+                            let subdir = base_dir.path().join(path).join(dir);
+                            create_dir_all(&subdir).unwrap();
+                            fs::File::create(subdir.join("shell.nix")).unwrap();
+                        }
+                    } else {
+                        let file = base_dir.path().join(path);
+                        fs::File::create(file).unwrap();
+                    }
+                }
+
+                if let Err(e) = run(args) {
+                   prop_assert!(
+                        false,
+                        r#"Running the inix program failed with an error: {e:?}"#
+                    )
+                };
+
+                for expected_file in [
+                    "shell.nix",
+                    ".envrc",
+                    "inix/node/shell.nix",
+                    "inix/node/.envrc",
+                ] {
+                    prop_assert!(
+                        base_dir.path().join(expected_file).exists(),
+                        r#"The file "/{expected_file}" does not exist."#
+                    );
+                }
+
+                // the inix directory only contains as many subdirs as there are templates
+                let num_created_templates = fs::read_dir(&inix_dir)
+                    .expect("I was unable to read the inix dir I expected to find")
+                    .count();
+
+               prop_assert_eq!(
+                    num_templates, num_created_templates,
+                    "I expected to find {} templates in the inix dir, but I actually found {}.",
+                    num_templates, num_created_templates
+                );
+
+                // files have been written with content
+                for file in [".envrc", "shell.nix"] {
+                    let content = fs::read_to_string(base_dir.path().join(file));
+
+                   prop_assert!(
+                        content.map(|s| s.len()).unwrap_or(0) > 0,
+                        r#"The file "/{file}" has no content."#,
+                    )
+                }
+            }
+        }
+    }
 }
