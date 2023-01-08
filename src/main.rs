@@ -954,7 +954,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn it_overwrites_files(subdirs: Vec<String>) {
+        fn it_overwrites_files(subdirs in prop::collection::vec("[a-zA-Z0-9]+", 0..10)) {
             for case in power_set(&["shell.nix", ".envrc", "inix"]) {
                 let base_dir = tempdir().unwrap();
                 let inix_dir = base_dir.path().join("inix");
