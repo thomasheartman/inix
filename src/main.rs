@@ -1011,8 +1011,7 @@ mod tests {
             existing_templates: HashSet<String>,
             new_templates: HashSet<String>,
         ) {
-            let templates = vec!["node".into()];
-            let num_templates = templates.len();
+            let templates: Vec<String> = new_templates.clone().into_iter().collect();
             let args = Cli {
                 templates,
                 ..Default::default()
@@ -1036,38 +1035,58 @@ mod tests {
 
                     SystemTime::now()
                 },
-                |paths, timestamp| {
-                    prop_assert!(SystemTime::now() > timestamp);
+                |paths, setup_end_time| {
+                    // new templates should be made after the end of the setup phase
+                    for dir in new_templates.iter() {
+                        let subdir = paths.inix_dir.join(dir);
 
-                    // for dir in existing_templates.iter() {
-                    //     let subdir = inix_dir.join(dir);
-                    //     create_dir_all(&subdir).unwrap();
-                    //     fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
-                    // }
+                        let dir_created_at = subdir
+                            .metadata()
+                            .and_then(|data| data.created())
+                            .expect(&format!(
+                                r#"I wasn't able to get the metadata::created time for "{}" "#,
+                                subdir.display()
+                            ));
 
-                    for expected_file in ["node/shell.nix", "node/.envrc"] {
-                        prop_assert!(
-                            paths.inix_dir.join(expected_file).exists(),
-                            r#"The file "/{expected_file}" does not exist."#
-                        );
+                        prop_assert!(dir_created_at > setup_end_time);
                     }
 
-                    // the inix directory only contains as many subdirs as there are templates
-                    let num_created_templates = fs::read_dir(paths.inix_dir)
+                    // old templates should be made before the end of the setup phase
+                    for dir in existing_templates.difference(&new_templates) {
+                        let subdir = paths.inix_dir.join(dir);
+
+                        let dir_created_at = subdir
+                            .metadata()
+                            .and_then(|data| data.created())
+                            .expect(&format!(
+                                r#"I wasn't able to get the metadata::created time for "{}" "#,
+                                subdir.display()
+                            ));
+
+                        prop_assert!(dir_created_at < setup_end_time);
+                    }
+
+                    // the inix directory only contains as many
+                    // subdirs as there are new and old templates put
+                    // together
+                    let num_templates = fs::read_dir(paths.inix_dir)
                     .expect(&format!(
                         r#"I was unable to read the inix directory that I expected to find at "{}""#,
                         paths.inix_dir.display()
                     ))
                     .count();
 
+                    let num_expected_templates = new_templates.union(&existing_templates).count();
+
                     prop_assert_eq!(
                         num_templates,
-                        num_created_templates,
+                        num_expected_templates,
                         "I expected to find {} templates in the inix dir, but I actually found {}.",
                         num_templates,
-                        num_created_templates
+                        num_expected_templates
                     );
 
+                    // the shell and nix files contain content (the setup files are empty)
                     for file in [paths.shell_nix, paths.envrc] {
                         let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
                             r#"I was unable to read the file "/{}""#,
