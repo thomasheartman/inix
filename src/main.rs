@@ -1107,6 +1107,130 @@ mod tests {
     }
 
     // - merge-keep: does not overwrite conflicting files
+
+    #[test]
+    fn merge_keep() {
+        proptest!(|(
+            nix: bool,
+            envrc: bool,
+            existing_templates in prop::collection::hash_set("node|rust", 0..2),
+            new_templates in prop::collection::hash_set("node|rust", 0..2))|
+                  go(nix, envrc, existing_templates, new_templates)
+        );
+
+        fn go(
+            nix: bool,
+            envrc: bool,
+            existing_templates: HashSet<String>,
+            new_templates: HashSet<String>,
+        ) {
+            let templates: Vec<String> = new_templates.clone().into_iter().collect();
+            let args = Cli {
+                templates,
+                ..Default::default()
+            };
+
+            test_inix_with_setup(
+                args,
+                |paths| {
+                    if nix {
+                        fs::File::create(paths.shell_nix).unwrap();
+                    }
+                    if envrc {
+                        fs::File::create(paths.envrc).unwrap();
+                    }
+
+                    for dir in existing_templates.iter() {
+                        let subdir = paths.inix_dir.join(dir);
+                        create_dir_all(&subdir).unwrap();
+                        fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
+                    }
+
+                    SystemTime::now()
+                },
+                |paths, setup_end_time| {
+                    // new templates should be made after the end of
+                    // the setup phase unless they were already there
+                    for dir in new_templates.difference(&existing_templates) {
+                        let subdir = paths.inix_dir.join(dir);
+
+                        let dir_created_at = subdir
+                            .metadata()
+                            .and_then(|data| data.created())
+                            .expect(&format!(
+                                r#"I wasn't able to get the metadata::created time for "{}" "#,
+                                subdir.display()
+                            ));
+
+                        prop_assert!(dir_created_at > setup_end_time);
+                    }
+
+                    // templates that already existed, but were also
+                    // in the list of new templates should not have
+                    // been replaced (should have been created before
+                    // the end of the setup phase).
+                    for dir in existing_templates.intersection(&new_templates) {
+                        let subdir = paths.inix_dir.join(dir);
+
+                        let dir_created_at = subdir
+                            .metadata()
+                            .and_then(|data| data.created())
+                            .expect(&format!(
+                                r#"I wasn't able to get the metadata::created time for "{}" "#,
+                                subdir.display()
+                            ));
+
+                        prop_assert!(dir_created_at < setup_end_time);
+                    }
+
+                    // dirs that existed and weren't listed should still exist.
+                    for dir in existing_templates.difference(&new_templates) {
+                        prop_assert!(paths.inix_dir.join(dir).exists());
+                    }
+
+                    // the inix directory only contains as many
+                    // subdirs as there are new and old templates put
+                    // together
+                    let num_templates = fs::read_dir(paths.inix_dir)
+                    .expect(&format!(
+                        r#"I was unable to read the inix directory that I expected to find at "{}""#,
+                        paths.inix_dir.display()
+                    ))
+                    .count();
+
+                    let num_expected_templates = new_templates.union(&existing_templates).count();
+
+                    prop_assert_eq!(
+                        num_templates,
+                        num_expected_templates,
+                        "I expected to find {} templates in the inix dir, but I actually found {}.",
+                        num_templates,
+                        num_expected_templates
+                    );
+
+                    // the shell and nix files contain content (the setup files are empty)
+                    for file in [paths.shell_nix, paths.envrc] {
+                        let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
+                            r#"I was unable to read the file "/{}""#,
+                            &file.display()
+                        ));
+
+                        prop_assert!(
+                            content.unwrap_or(0) > 0,
+                            r#"The file "/{}" has no content."#,
+                            &file.display()
+                        )
+                    }
+
+                    // todo: make sure the new shell and envrc files reference the old files?
+                    todo!();
+
+                    Ok(())
+                },
+            )
+        }
+    }
+
     //
     //   - if there are existing shell.nix and/or .envrc files: can
     //   these be renamed with a timestamp and sourced? Or we could
@@ -1121,8 +1245,6 @@ mod tests {
     // - nothing is written if --dry-run is provided
 
     // - overwrites existing files and dirs if asked to
-    // proptest! {
-
     #[test]
     fn it_overwrites_files() {
         proptest!(|(
