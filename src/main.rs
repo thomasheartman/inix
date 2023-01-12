@@ -928,10 +928,8 @@ mod tests {
         let project_dir = base_dir.path().join("my/project");
 
         for templates in power_set(&["rust", "node"]).filter(|set| set.len() > 0) {
-            // let strings = templates.
-            // TODO: use the templates to test this
             let args = Cli {
-                templates: vec![],
+                templates: templates.iter().map(|s| s.deref().into()).collect(),
                 directory: Some(project_dir.clone()),
                 ..Default::default()
             };
@@ -951,49 +949,53 @@ mod tests {
             })
         }
     }
+
     //
     // - the resulting .envrc and shell.nix files actually work
-    //
+    #[test]
+    fn the_envrc_file_works() {
+        // todo: use proptest to generate this with and without
+        // subdirectories that it needs to source from?
+        todo!()
+    }
+
+    #[test]
+    fn the_nix_file_works() {
+        // todo: use proptest to generate this with and without
+        // subdirectories that it needs to source from?
+        todo!()
+    }
+
     // - the base .envrc and shell.nix files contain links to all the
     // templates mentioned
-    //
-    //
+    #[test]
+    fn all_templates_are_linked() {
+        // in short:
+        // generate a set of templates. Ensure that each one is linked in both .envrc and shell.nix
+        todo!()
+    }
+
     // - merge-replace: overwrites conflicting files
     //
-    // - merge-keep: does not overwrite conflicting files
-    //
-    //   - if there are existing shell.nix and/or .envrc files: can
-    //   these be renamed with a timestamp and sourced? Or we could
-    //   give them "generations". If a conflicting is discovered, take
-    //   the highest generation found and make a new one. What if
-    //   there are gaps? E.g. gens 1,2,7? Then do gen 8.
-    //
-    // - cancel: cancels on existing files
-    //
-    // - auto-allow performs the necessary functions
-    //
-    // - nothing is written if --dry-run is provided
+    fn merge_replace_run(
+        nix: bool,
+        envrc: bool,
+        existing_templates: HashSet<String>,
+        new_templates: HashSet<String>,
+    ) {
+        let templates = vec!["node".into()];
+        let num_templates = templates.len();
+        let args = Cli {
+            templates,
+            ..Default::default()
+        };
 
-    // - overwrites existing files and dirs if asked to
-    // proptest! {
-    proptest! {
-        #[test]
-        fn it_overwrites_files(
-            nix: bool,
-            envrc: bool,
-            subdirs in prop::collection::vec("[a-zA-Z0-9]+", 0..10)
-            // subdirs: Vec<String>,
-        ) {
-            let templates = vec!["node".into()];
-            let num_templates = templates.len();
-            let args = Cli {
-                templates,
-                ..Default::default()
-            };
+        let mut timestamp = None;
 
-            test_inix(args, |base_dir| {
+        test_inix_with_setup(
+            args,
+            |base_dir| {
                 let inix_dir = base_dir.join("inix");
-
                 let shell_nix_path = base_dir.join("shell.nix");
                 let envrc_path = base_dir.join(".envrc");
 
@@ -1004,11 +1006,29 @@ mod tests {
                     fs::File::create(&envrc_path).unwrap();
                 }
 
-                for dir in subdirs.iter() {
+                for dir in existing_templates.iter() {
                     let subdir = inix_dir.join(dir);
                     create_dir_all(&subdir).unwrap();
                     fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
                 }
+
+                timestamp = Some(SystemTime::now());
+            },
+            |base_dir| {
+                let existing_timestamp = timestamp
+                    .context("I haven't created an original timestamp for some reason.")
+                    .unwrap();
+                prop_assert!(SystemTime::now() > existing_timestamp);
+
+                let inix_dir = base_dir.join("inix");
+                let shell_nix_path = base_dir.join("shell.nix");
+                let envrc_path = base_dir.join(".envrc");
+
+                // for dir in existing_templates.iter() {
+                //     let subdir = inix_dir.join(dir);
+                //     create_dir_all(&subdir).unwrap();
+                //     fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
+                // }
 
                 for expected_file in ["inix/node/shell.nix", "inix/node/.envrc"] {
                     prop_assert!(
@@ -1047,7 +1067,114 @@ mod tests {
                 }
 
                 Ok(())
-            })
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn merge_replace(
+            nix: bool,
+            envrc: bool,
+            existing_templates in prop::collection::hash_set("node|rust", 0..2),
+            new_templates in prop::collection::hash_set("node|rust", 0..2)
+        ) {
+            merge_replace_run(nix, envrc, existing_templates, new_templates)
+        }
+    }
+
+    // - merge-keep: does not overwrite conflicting files
+    //
+    //   - if there are existing shell.nix and/or .envrc files: can
+    //   these be renamed with a timestamp and sourced? Or we could
+    //   give them "generations". If a conflicting is discovered, take
+    //   the highest generation found and make a new one. What if
+    //   there are gaps? E.g. gens 1,2,7? Then do gen 8.
+    //
+    // - cancel: cancels on existing files
+    //
+    // - auto-allow performs the necessary functions
+    //
+    // - nothing is written if --dry-run is provided
+
+    // - overwrites existing files and dirs if asked to
+    // proptest! {
+
+    fn it_overwrites_files(nix: bool, envrc: bool, subdirs: Vec<String>) {
+        let templates = vec!["node".into()];
+        let num_templates = templates.len();
+        let args = Cli {
+            templates,
+            ..Default::default()
+        };
+
+        test_inix(args, |base_dir| {
+            let inix_dir = base_dir.join("inix");
+
+            let shell_nix_path = base_dir.join("shell.nix");
+            let envrc_path = base_dir.join(".envrc");
+
+            if nix {
+                fs::File::create(&shell_nix_path).unwrap();
+            }
+            if envrc {
+                fs::File::create(&envrc_path).unwrap();
+            }
+
+            for dir in subdirs.iter() {
+                let subdir = inix_dir.join(dir);
+                create_dir_all(&subdir).unwrap();
+                fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
+            }
+
+            for expected_file in ["inix/node/shell.nix", "inix/node/.envrc"] {
+                prop_assert!(
+                    base_dir.join(expected_file).exists(),
+                    r#"The file "/{expected_file}" does not exist."#
+                );
+            }
+
+            // the inix directory only contains as many subdirs as there are templates
+            let num_created_templates = fs::read_dir(&inix_dir)
+                .expect(&format!(
+                    r#"I was unable to read the inix directory that I expected to find at "{}""#,
+                    &inix_dir.display()
+                ))
+                .count();
+
+            prop_assert_eq!(
+                num_templates,
+                num_created_templates,
+                "I expected to find {} templates in the inix dir, but I actually found {}.",
+                num_templates,
+                num_created_templates
+            );
+
+            for file in [&shell_nix_path, &envrc_path] {
+                let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
+                    r#"I was unable to read the file "/{}""#,
+                    &file.display()
+                ));
+
+                prop_assert!(
+                    content.unwrap_or(0) > 0,
+                    r#"The file "/{}" has no content."#,
+                    &file.display()
+                )
+            }
+
+            Ok(())
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn it_overwrites_files_props(
+            nix: bool,
+            envrc: bool,
+            subdirs in prop::collection::vec("[a-zA-Z0-9]+", 0..10)
+        ) {
+            it_overwrites_files(nix, envrc, subdirs)
         }
     }
 
@@ -1068,12 +1195,12 @@ mod tests {
                 ..Default::default()
             },
             |target_dir| {
-                create_dir_all(&target_dir.join(&template_dir))
+                create_dir_all(target_dir.join(&template_dir))
                     .expect("Failed to create a pre-existing template dir to set up the test.");
             },
             |target_dir| {
                 assert!(
-                    target_dir.join(template_dir).exists(),
+                    target_dir.join(&template_dir).exists(),
                     "The pre-existing template directory does not exist anymore"
                 );
             },
