@@ -840,7 +840,7 @@ fn prompt_for_conflict_behavior(inix_dir: &InixDir) -> anyhow::Result<ConflictBe
 #[cfg(test)]
 mod tests {
 
-    use std::path::Path;
+    use std::{collections::HashSet, ops::Deref, path::Path, time::SystemTime};
 
     use proptest::prelude::*;
     use tempfile::tempdir;
@@ -854,21 +854,35 @@ mod tests {
         Cli::command().debug_assert()
     }
 
+    struct InixPaths<'a> {
+        base_dir: &'a Path,
+        inix_dir: &'a Path,
+        shell_nix: &'a Path,
+        envrc: &'a Path,
+    }
+
     fn test_inix_with_setup<T, SetupOutput>(
         args: Cli,
-        setup: impl FnOnce(&Path) -> SetupOutput,
-        execute: impl FnOnce(&Path) -> T,
+        setup: impl FnOnce(&InixPaths) -> SetupOutput,
+        execute: impl FnOnce(&InixPaths, SetupOutput) -> T,
     ) {
         let target_dir = args
             .directory
             .unwrap_or(tempdir().expect("couldn't create a temp dir").path().into());
+
+        let paths = InixPaths {
+            base_dir: &target_dir,
+            inix_dir: &target_dir.join("inix"),
+            shell_nix: &target_dir.join("shell.nix"),
+            envrc: &target_dir.join("shell.nix"),
+        };
 
         let args_p = Cli {
             directory: Some(target_dir.clone()),
             ..args
         };
 
-        setup(&target_dir);
+        let setup_output = setup(&paths);
 
         match run(args_p) {
             Err(e) => assert!(
@@ -876,13 +890,13 @@ mod tests {
                 r#"Running the inix program failed with an error: {e:?}"#
             ),
             Ok(_) => {
-                execute(&target_dir);
+                execute(&paths, setup_output);
             }
         };
     }
 
-    fn test_inix<T>(args: Cli, execute: impl FnOnce(&Path) -> T) {
-        test_inix_with_setup(args, |_| {}, execute)
+    fn test_inix<T>(args: Cli, execute: impl FnOnce(&InixPaths) -> T) {
+        test_inix_with_setup(args, |_| {}, |paths, _| execute(paths))
     }
 
     fn power_set<'a, T>(a: &[T]) -> impl Iterator<Item = &[T]> {
@@ -903,16 +917,17 @@ mod tests {
                 templates: vec![],
                 ..Default::default()
             },
-            |target_dir| {
-                for expected_file in ["shell.nix", ".envrc"] {
+            |paths| {
+                for expected_file in [paths.shell_nix, paths.envrc] {
                     assert!(
-                        target_dir.join(expected_file).is_file(),
-                        r#"The file "/{expected_file}" does not exist or is not a file."#
+                        expected_file.is_file(),
+                        r#"The file "/{}" does not exist or is not a file."#,
+                        expected_file.display()
                     );
                 }
                 assert_eq!(
                     false,
-                    target_dir.join("inix").exists(),
+                    paths.inix_dir.exists(),
                     r#"The /inix directory was created when it shouldn't have anything in it."#
                 );
             },
@@ -934,15 +949,18 @@ mod tests {
                 ..Default::default()
             };
 
-            test_inix(args, |target_dir| {
-                for expected_file in [
-                    "shell.nix",
-                    ".envrc",
-                    "inix/node/shell.nix",
-                    "inix/node/.envrc",
-                ] {
+            test_inix(args, |paths| {
+                for expected_file in [paths.shell_nix, paths.envrc] {
                     assert!(
-                        target_dir.join(expected_file).is_file(),
+                        expected_file.is_file(),
+                        r#"The file "/{}" does not exist or is not a file."#,
+                        expected_file.display()
+                    );
+                }
+
+                for expected_file in ["node/shell.nix", "node/.envrc"] {
+                    assert!(
+                        paths.inix_dir.join(expected_file).is_file(),
                         r#"The file "/{expected_file}" does not exist or is not a file."#
                     );
                 }
@@ -977,109 +995,95 @@ mod tests {
 
     // - merge-replace: overwrites conflicting files
     //
-    fn merge_replace_run(
-        nix: bool,
-        envrc: bool,
-        existing_templates: HashSet<String>,
-        new_templates: HashSet<String>,
-    ) {
-        let templates = vec!["node".into()];
-        let num_templates = templates.len();
-        let args = Cli {
-            templates,
-            ..Default::default()
-        };
-
-        let mut timestamp = None;
-
-        test_inix_with_setup(
-            args,
-            |base_dir| {
-                let inix_dir = base_dir.join("inix");
-                let shell_nix_path = base_dir.join("shell.nix");
-                let envrc_path = base_dir.join(".envrc");
-
-                if nix {
-                    fs::File::create(&shell_nix_path).unwrap();
-                }
-                if envrc {
-                    fs::File::create(&envrc_path).unwrap();
-                }
-
-                for dir in existing_templates.iter() {
-                    let subdir = inix_dir.join(dir);
-                    create_dir_all(&subdir).unwrap();
-                    fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
-                }
-
-                timestamp = Some(SystemTime::now());
-            },
-            |base_dir| {
-                let existing_timestamp = timestamp
-                    .context("I haven't created an original timestamp for some reason.")
-                    .unwrap();
-                prop_assert!(SystemTime::now() > existing_timestamp);
-
-                let inix_dir = base_dir.join("inix");
-                let shell_nix_path = base_dir.join("shell.nix");
-                let envrc_path = base_dir.join(".envrc");
-
-                // for dir in existing_templates.iter() {
-                //     let subdir = inix_dir.join(dir);
-                //     create_dir_all(&subdir).unwrap();
-                //     fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
-                // }
-
-                for expected_file in ["inix/node/shell.nix", "inix/node/.envrc"] {
-                    prop_assert!(
-                        base_dir.join(expected_file).exists(),
-                        r#"The file "/{expected_file}" does not exist."#
-                    );
-                }
-
-                // the inix directory only contains as many subdirs as there are templates
-                let num_created_templates = fs::read_dir(&inix_dir)
-                    .expect(&format!(
-                        r#"I was unable to read the inix directory that I expected to find at "{}""#,
-                        &inix_dir.display()
-                    ))
-                    .count();
-
-                prop_assert_eq!(
-                    num_templates,
-                    num_created_templates,
-                    "I expected to find {} templates in the inix dir, but I actually found {}.",
-                    num_templates,
-                    num_created_templates
-                );
-
-                for file in [&shell_nix_path, &envrc_path] {
-                    let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
-                        r#"I was unable to read the file "/{}""#,
-                        &file.display()
-                    ));
-
-                    prop_assert!(
-                        content.unwrap_or(0) > 0,
-                        r#"The file "/{}" has no content."#,
-                        &file.display()
-                    )
-                }
-
-                Ok(())
-            },
-        )
-    }
-
-    proptest! {
-        #[test]
-        fn merge_replace(
+    #[test]
+    fn merge_replace() {
+        proptest!(|(
             nix: bool,
             envrc: bool,
             existing_templates in prop::collection::hash_set("node|rust", 0..2),
-            new_templates in prop::collection::hash_set("node|rust", 0..2)
+            new_templates in prop::collection::hash_set("node|rust", 0..2))|
+                  go(nix, envrc, existing_templates, new_templates)
+        );
+
+        fn go(
+            nix: bool,
+            envrc: bool,
+            existing_templates: HashSet<String>,
+            new_templates: HashSet<String>,
         ) {
-            merge_replace_run(nix, envrc, existing_templates, new_templates)
+            let templates = vec!["node".into()];
+            let num_templates = templates.len();
+            let args = Cli {
+                templates,
+                ..Default::default()
+            };
+
+            test_inix_with_setup(
+                args,
+                |paths| {
+                    if nix {
+                        fs::File::create(paths.shell_nix).unwrap();
+                    }
+                    if envrc {
+                        fs::File::create(paths.envrc).unwrap();
+                    }
+
+                    for dir in existing_templates.iter() {
+                        let subdir = paths.inix_dir.join(dir);
+                        create_dir_all(&subdir).unwrap();
+                        fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
+                    }
+
+                    SystemTime::now()
+                },
+                |paths, timestamp| {
+                    prop_assert!(SystemTime::now() > timestamp);
+
+                    // for dir in existing_templates.iter() {
+                    //     let subdir = inix_dir.join(dir);
+                    //     create_dir_all(&subdir).unwrap();
+                    //     fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
+                    // }
+
+                    for expected_file in ["node/shell.nix", "node/.envrc"] {
+                        prop_assert!(
+                            paths.inix_dir.join(expected_file).exists(),
+                            r#"The file "/{expected_file}" does not exist."#
+                        );
+                    }
+
+                    // the inix directory only contains as many subdirs as there are templates
+                    let num_created_templates = fs::read_dir(paths.inix_dir)
+                    .expect(&format!(
+                        r#"I was unable to read the inix directory that I expected to find at "{}""#,
+                        paths.inix_dir.display()
+                    ))
+                    .count();
+
+                    prop_assert_eq!(
+                        num_templates,
+                        num_created_templates,
+                        "I expected to find {} templates in the inix dir, but I actually found {}.",
+                        num_templates,
+                        num_created_templates
+                    );
+
+                    for file in [paths.shell_nix, paths.envrc] {
+                        let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
+                            r#"I was unable to read the file "/{}""#,
+                            &file.display()
+                        ));
+
+                        prop_assert!(
+                            content.unwrap_or(0) > 0,
+                            r#"The file "/{}" has no content."#,
+                            &file.display()
+                        )
+                    }
+
+                    Ok(())
+                },
+            )
         }
     }
 
@@ -1100,81 +1104,75 @@ mod tests {
     // - overwrites existing files and dirs if asked to
     // proptest! {
 
-    fn it_overwrites_files(nix: bool, envrc: bool, subdirs: Vec<String>) {
-        let templates = vec!["node".into()];
-        let num_templates = templates.len();
-        let args = Cli {
-            templates,
-            ..Default::default()
-        };
+    #[test]
+    fn it_overwrites_files() {
+        proptest!(|(
+            nix: bool,
+            envrc: bool,
+            subdirs in prop::collection::vec("[a-zA-Z0-9]+", 0..10))|
+                  go(nix, envrc, subdirs)
+        );
 
-        test_inix(args, |base_dir| {
-            let inix_dir = base_dir.join("inix");
+        fn go(nix: bool, envrc: bool, subdirs: Vec<String>) {
+            let templates = vec!["node".into()];
+            let num_templates = templates.len();
+            let args = Cli {
+                templates,
+                ..Default::default()
+            };
 
-            let shell_nix_path = base_dir.join("shell.nix");
-            let envrc_path = base_dir.join(".envrc");
+            test_inix(args, |paths| {
+                if nix {
+                    fs::File::create(paths.shell_nix).unwrap();
+                }
+                if envrc {
+                    fs::File::create(paths.envrc).unwrap();
+                }
 
-            if nix {
-                fs::File::create(&shell_nix_path).unwrap();
-            }
-            if envrc {
-                fs::File::create(&envrc_path).unwrap();
-            }
+                for dir in subdirs.iter() {
+                    let subdir = paths.inix_dir.join(dir);
+                    create_dir_all(&subdir).unwrap();
+                    fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
+                }
 
-            for dir in subdirs.iter() {
-                let subdir = inix_dir.join(dir);
-                create_dir_all(&subdir).unwrap();
-                fs::File::create(subdir.join("shell.nix_placeholder")).unwrap();
-            }
+                for expected_file in ["node/shell.nix", "node/.envrc"] {
+                    prop_assert!(
+                        paths.inix_dir.join(expected_file).exists(),
+                        r#"The file "/{expected_file}" does not exist."#
+                    );
+                }
 
-            for expected_file in ["inix/node/shell.nix", "inix/node/.envrc"] {
-                prop_assert!(
-                    base_dir.join(expected_file).exists(),
-                    r#"The file "/{expected_file}" does not exist."#
-                );
-            }
-
-            // the inix directory only contains as many subdirs as there are templates
-            let num_created_templates = fs::read_dir(&inix_dir)
+                // the inix directory only contains as many subdirs as there are templates
+                let num_created_templates = fs::read_dir(paths.inix_dir)
                 .expect(&format!(
                     r#"I was unable to read the inix directory that I expected to find at "{}""#,
-                    &inix_dir.display()
+                    paths.inix_dir.display()
                 ))
                 .count();
 
-            prop_assert_eq!(
-                num_templates,
-                num_created_templates,
-                "I expected to find {} templates in the inix dir, but I actually found {}.",
-                num_templates,
-                num_created_templates
-            );
+                prop_assert_eq!(
+                    num_templates,
+                    num_created_templates,
+                    "I expected to find {} templates in the inix dir, but I actually found {}.",
+                    num_templates,
+                    num_created_templates
+                );
 
-            for file in [&shell_nix_path, &envrc_path] {
-                let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
-                    r#"I was unable to read the file "/{}""#,
-                    &file.display()
-                ));
+                for file in [paths.shell_nix, paths.envrc] {
+                    let content = fs::read_to_string(file).map(|s| s.len()).context(format!(
+                        r#"I was unable to read the file "/{}""#,
+                        &file.display()
+                    ));
 
-                prop_assert!(
-                    content.unwrap_or(0) > 0,
-                    r#"The file "/{}" has no content."#,
-                    &file.display()
-                )
-            }
+                    prop_assert!(
+                        content.unwrap_or(0) > 0,
+                        r#"The file "/{}" has no content."#,
+                        &file.display()
+                    )
+                }
 
-            Ok(())
-        })
-    }
-
-    proptest! {
-        #[test]
-        fn it_overwrites_files_props(
-            nix: bool,
-            envrc: bool,
-            subdirs in prop::collection::vec("[a-zA-Z0-9]+", 0..10)
-        ) {
-            it_overwrites_files(nix, envrc, subdirs)
+                Ok(())
+            })
         }
     }
 
@@ -1194,13 +1192,13 @@ mod tests {
                 on_conflict: Some(ConflictBehavior::Overwrite),
                 ..Default::default()
             },
-            |target_dir| {
-                create_dir_all(target_dir.join(&template_dir))
+            |paths| {
+                create_dir_all(paths.base_dir.join(&template_dir))
                     .expect("Failed to create a pre-existing template dir to set up the test.");
             },
-            |target_dir| {
+            |paths, _| {
                 assert!(
-                    target_dir.join(&template_dir).exists(),
+                    paths.base_dir.join(&template_dir).exists(),
                     "The pre-existing template directory does not exist anymore"
                 );
             },
